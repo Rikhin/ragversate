@@ -1,0 +1,38 @@
+{
+  "name": "ragversate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test:helixdb": "node scripts/test-helixdb.js",
+    "test:supermemory": "npx tsx scripts/test-supermemory.js",
+    "setup:helixdb": "./scripts/setup-helixdb.sh",
+    "setup:supermemory": "./scripts/setup-supermemory.sh",
+    "show:cache": "npx tsx scripts/show-cache.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.0",
+    "exa-js": "^1.8.22",
+    "helix-ts": "^1.0.5",
+    "next": "15.4.1",
+    "openai": "^5.10.1",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "supermemory": "^3.0.0-alpha.21"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.4.1",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
