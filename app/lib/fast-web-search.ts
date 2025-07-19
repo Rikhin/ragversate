@@ -191,17 +191,17 @@ class FastWebSearchService {
     }
   }
 
-  private async cacheEntities(results: any[], query: string) {
+  private async cacheEntities(results: unknown[], query: string) {
     try {
       // Extract basic entities from search results without full content extraction
-      const entities = results
+      const entities = (results as any[])
         .filter(r => r.title && r.text)
         .map(r => ({
           name: r.title,
-          description: r.text.substring(0, 200),
+          description: (r.text as string).substring(0, 200),
           category: this.categorizeEntity(r.title, r.text),
           source: 'web',
-          url: r.url
+          url: (r as any).url
         }))
         .slice(0, 3); // Limit to top 3 for speed
 
@@ -215,11 +215,11 @@ class FastWebSearchService {
     }
   }
 
-  private async storeEntitiesInBackground(entities: any[], query: string) {
+  private async storeEntitiesInBackground(entities: unknown[], query: string) {
     // Store entities in background without blocking the response
     setImmediate(async () => {
       try {
-        for (const entity of entities) {
+        for (const entity of entities as any[]) {
           await helixDB.createEntity({
             name: entity.name,
             category: entity.category,
@@ -234,10 +234,10 @@ class FastWebSearchService {
     });
   }
 
-  private async generateFollowUpQuestions(query: string, results: any[]): Promise<string[]> {
+  private async generateFollowUpQuestions(query: string, results: unknown[]): Promise<string[]> {
     try {
       // Generate follow-up questions based on search results
-      const titles = results.map(r => r.title).join(', ');
+      const titles = (results as any[]).map(r => r.title).join(', ');
       
       const response = await this.openai.chat.completions.create({
         model: 'gpt-3.5-turbo-0125',
@@ -255,7 +255,7 @@ class FastWebSearchService {
         temperature: 0.7
       });
 
-      const questions = response.choices[0]?.message?.content?.split('\n').filter(q => q.trim()) || [];
+      const questions = (response.choices[0]?.message?.content as string)?.split('\n').filter(q => q.trim()) || [];
       return questions.slice(0, 3);
     } catch (error) {
       console.warn('Follow-up generation failed:', error);
@@ -263,15 +263,15 @@ class FastWebSearchService {
     }
   }
 
-  private async generateSummary(query: string, contents: any[], maxLength: number): Promise<string> {
+  private async generateSummary(query: string, contents: unknown[], maxLength: number): Promise<string> {
     try {
       if (contents.length === 0) {
         return `No detailed information found for "${query}".`;
       }
 
       // Use a faster approach for summary generation - limit content
-      const textContent = contents
-        .map(c => c.text?.substring(0, 300)) // Reduced from 500
+      const textContent = (contents as any[])
+        .map(c => (c.text as string)?.substring(0, 300)) // Reduced from 500
         .filter(Boolean)
         .join('\n\n')
         .substring(0, 1000); // Reduced from 2000
@@ -292,27 +292,27 @@ class FastWebSearchService {
         temperature: 0.2 // Lower temperature for faster generation
       });
 
-      return response.choices[0]?.message?.content || `Information found for "${query}".`;
+      return (response.choices[0]?.message?.content as string) || `Information found for "${query}".`;
     } catch (error) {
       console.warn('Summary generation failed:', error);
       return `Information found for "${query}".`;
     }
   }
 
-  private extractEntitiesFromResults(results: any[], entityResults: any): any[] {
-    if (entityResults.status === 'fulfilled' && entityResults.value.length > 0) {
-      return entityResults.value;
+  private extractEntitiesFromResults(results: unknown[], entityResults: unknown): unknown[] {
+    if (entityResults.status === 'fulfilled' && (entityResults as any).value.length > 0) {
+      return (entityResults as any).value;
     }
 
     // Fallback: extract basic entities from search results
-    return results
+    return (results as any[])
       .slice(0, 3)
       .map(r => ({
-        name: r.title,
-        description: r.text?.substring(0, 150) || 'No description available',
+        name: (r as any).title,
+        description: (r as any).text?.substring(0, 150) || 'No description available',
         category: 'other',
         source: 'web',
-        url: r.url
+        url: (r as any).url
       }));
   }
 
@@ -335,9 +335,9 @@ class FastWebSearchService {
     return 'other';
   }
 
-  private calculateConfidence(results: any[]): 'high' | 'medium' | 'low' {
-    if (results.length >= 5) return 'high';
-    if (results.length >= 3) return 'medium';
+  private calculateConfidence(results: unknown[]): 'high' | 'medium' | 'low' {
+    if ((results as any[]).length >= 5) return 'high';
+    if ((results as any[]).length >= 3) return 'medium';
     return 'low';
   }
 
