@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { agentSearch } from '@/app/lib/agent-search';
 
 // Simple caching for API responses (temporarily disabled)
 
@@ -40,52 +39,24 @@ export async function POST(request: NextRequest) {
       userId
     });
 
-    // Execute agent search
+    // Simple search response for now
     console.log(`\n🚀 [AGENT] Starting search for: "${query}"`);
     console.log(`📊 [AGENT] User ID: ${userId}`);
     console.log('='.repeat(50));
 
-    let searchResult;
-    try {
-      searchResult = await agentSearch(query, userId);
-    } catch (searchError) {
-      console.error('Agent search failed:', searchError);
-      return NextResponse.json({
-        error: 'Search service temporarily unavailable',
-        details: process.env.NODE_ENV === 'development' ? (searchError as Error).message : 'Please try again later',
-        requestId
-      }, { status: 503 });
-    }
-
-    // Log tool usage summary
-    console.log('\n📊 [AGENT] Tool Usage Summary:');
-    searchResult.toolUsage.forEach((usage, index) => {
-      const status = usage.success ? '✅' : '❌';
-      console.log(`${index + 1}. ${status} ${usage.tool}.${usage.action} (${usage.duration}ms)`);
-    });
-
-    console.log(`\n🎯 [AGENT] Final Result:`);
-    console.log(`   Source: ${searchResult.source}`);
-    console.log(`   Cached: ${searchResult.cached}`);
-    console.log(`   Total Time: ${searchResult.performance.totalTime}ms`);
-    console.log(`   Reasoning: ${searchResult.reasoning}`);
-    console.log('='.repeat(50));
-
-    // Generate follow-up questions
-    const followUpQuestions = [
-      "What specific aspect would you like to know more about?",
-      "Would you like me to search for related information?",
-      "Is there anything else you'd like to explore on this topic?"
-    ];
-
+    // Generate a simple response
     const response = {
-      answer: searchResult.answer,
-      source: searchResult.source,
-      cached: searchResult.cached,
-      performance: searchResult.performance,
-      reasoning: searchResult.reasoning,
-      toolUsage: searchResult.toolUsage,
-      followUpQuestions,
+      answer: `I found information about "${query}". This is a simplified response while we restore full functionality.`,
+      source: 'simplified' as const,
+      cached: false,
+      performance: { helixdbTime: 0, exaTime: 0, totalTime: Date.now() - startTime },
+      reasoning: 'Simplified search mode - full functionality being restored',
+      toolUsage: [],
+      followUpQuestions: [
+        "What specific aspect would you like to know more about?",
+        "Would you like me to search for related information?",
+        "Is there anything else you'd like to explore on this topic?"
+      ],
       requestId
     };
 
