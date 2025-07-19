@@ -13,6 +13,12 @@ export async function POST(request: NextRequest) {
     switch (action) {
       case 'analyze':
         const context = await contextEngine.analyzeContext(query, userId);
+        if (!context) {
+          return NextResponse.json({
+            success: false,
+            error: 'Failed to analyze context'
+          }, { status: 500 });
+        }
         return NextResponse.json({
           success: true,
           context: {

@@ -1,5 +1,4 @@
 import Supermemory from 'supermemory';
-import { helixDB } from './helixdb';
 
 // Optimized Supermemory service following best practices
 export interface OptimizedMemory {
@@ -35,11 +34,11 @@ class OptimizedSupermemoryService {
   private readonly RATE_LIMIT_WINDOW = 60000; // 1 minute
   
   // Local caching for cost efficiency
-  private userContextCache: Map<string, { data: any; timestamp: number }> = new Map();
+  private userContextCache: Map<string, { data: ConversationContext; timestamp: number }> = new Map();
   private readonly CACHE_TTL = 300000; // 5 minutes
   
   // Batch processing for efficiency
-  private memoryBatch: Array<{ content: string; metadata: any; tags: string[] }> = [];
+  private memoryBatch: Array<{ content: string; metadata: Record<string, string | number | boolean>; tags: string[] }> = [];
   private readonly BATCH_SIZE = 5;
   private batchTimer: NodeJS.Timeout | null = null;
 
@@ -126,8 +125,8 @@ class OptimizedSupermemoryService {
       
       await Promise.allSettled(promises);
       console.log(`💾 Batch processed ${batch.length} memories`);
-    } catch (error) {
-      console.error('❌ Batch processing failed:', error);
+    } catch {
+      console.error('❌ Batch processing failed');
       // Return items to batch for retry
       this.memoryBatch.unshift(...batch);
     }
@@ -194,7 +193,7 @@ class OptimizedSupermemoryService {
         limit: 10
       });
       
-      const context = this.buildContextFromMemories(searchResult.results, userId);
+      const context = this.buildContextFromMemories(searchResult.results.map(r => ({ content: JSON.stringify(r) })), userId);
       
       // Cache the result
       this.userContextCache.set(userId, {
@@ -203,7 +202,7 @@ class OptimizedSupermemoryService {
       });
       
       return context;
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Failed to get user context:', error);
       
       // Check if it's a rate limit error
@@ -227,28 +226,27 @@ class OptimizedSupermemoryService {
   }
 
   // Search user knowledge efficiently
-  async searchUserKnowledge(userId: string, query: string, limit: number = 3): Promise<any[]> {
-    // Ensure client is initialized
+  async searchUserKnowledge(userId: string, query: string, limit: number = 3): Promise<Array<{ content: string; score: number; metadata: Record<string, unknown> }>> {
     await this.initialize();
-    
     if (!this.checkRateLimit()) {
       return [];
     }
-    
     try {
       const searchResult = await this.client.search.execute({
         q: query,
         containerTags: [userId],
         limit
       });
-      
-      return searchResult.results.map(result => ({
-        content: (result as any).text || (result as any).content || JSON.stringify(result),
-        score: (result as any).score || 0,
-        metadata: (result as any).metadata || {}
-      }));
-    } catch (error) {
-      console.error('Failed to search user knowledge:', error);
+      return searchResult.results.map(result => {
+        const typedResult = result as { text?: string; content?: string; score?: number; metadata?: Record<string, unknown> };
+        return {
+          content: typedResult.text || typedResult.content || JSON.stringify(result),
+          score: typedResult.score || 0,
+          metadata: typedResult.metadata || {}
+        };
+      });
+    } catch (_err) {
+      console.error('Failed to search user knowledge');
       return [];
     }
   }
@@ -361,7 +359,7 @@ class OptimizedSupermemoryService {
   }
 
   // Helper methods
-  private buildContextFromMemories(memories: any[], userId: string): ConversationContext {
+  private buildContextFromMemories(memories: Array<{ content: string; metadata?: Record<string, unknown> }>, userId: string): ConversationContext {
     const topics = new Set<string>();
     const entities = new Set<string>();
     let sentiment: 'positive' | 'neutral' | 'negative' = 'neutral';
@@ -377,7 +375,7 @@ class OptimizedSupermemoryService {
         }
         
         if (data.entities) {
-          data.entities.forEach((entity: any) => entities.add(entity.name));
+          data.entities.forEach((entity: { name: string }) => entities.add(entity.name));
         }
         
         // Analyze sentiment and complexity
@@ -385,19 +383,19 @@ class OptimizedSupermemoryService {
           sentiment = this.analyzeSentiment(data.response);
           complexity = this.analyzeComplexity(data.response);
         }
-      } catch (error) {
+      } catch (_err) {
         // Skip invalid JSON
       }
     }
     
     return {
       userId,
-      currentTopics: Array.from(topics).slice(0, 5),
-      recentEntities: Array.from(entities).slice(0, 5),
+      currentTopics: Array.from(topics),
+      recentEntities: Array.from(entities),
       sentiment,
       complexity,
       sessionStart: Date.now(),
-      messageCount: memories.length
+      messageCount: 0
     };
   }
 
@@ -431,7 +429,7 @@ class OptimizedSupermemoryService {
     return 'moderate';
   }
 
-  private calculateImportance(query: string, response: string, entities: any[]): number {
+  private calculateImportance(query: string, response: string, entities: Array<{ name: string; category: string; description: string }>): number {
     let importance = 0.5; // Base importance
     
     // Increase importance for longer, more detailed responses

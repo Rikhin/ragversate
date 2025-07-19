@@ -23,12 +23,12 @@ export interface AgentSearchResult {
 export interface ToolUsage {
   tool: string;
   action: string;
-  parameters: any;
+  parameters: Record<string, unknown>;
   startTime: number;
   endTime: number;
   duration: number;
   success: boolean;
-  result?: any;
+  result?: unknown;
   error?: string;
 }
 
@@ -240,7 +240,8 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
     }
   } catch (error) {
     helixdbTime = Date.now() - helixStart;
-    logToolUsage('HelixDB', 'semanticSearch', { query, limit: 1 }, helixStart, false, undefined, error.message);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    logToolUsage('HelixDB', 'semanticSearch', { query, limit: 1 }, helixStart, false, undefined, errorMessage);
   }
 
   // 2. Check for similar query patterns using enhanced matching
@@ -274,7 +275,8 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
       logToolUsage('PatternMatcher', 'findSimilarPattern', { query }, patternStart, true, { similarQuery: null });
     }
   } catch (error) {
-    logToolUsage('PatternMatcher', 'findSimilarPattern', { query }, patternStart, false, undefined, error.message);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    logToolUsage('PatternMatcher', 'findSimilarPattern', { query }, patternStart, false, undefined, errorMessage);
   }
 
   // 3. If not found, search Exa
@@ -328,8 +330,9 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
       
       logger.log('info', '🤖 Summary generated', { query, summaryLength: summary.length });
     } catch (error) {
-      logToolUsage('GPT-4o', 'summarize', { query, entitiesCount: exaResult.entities.length }, gptStart, false, undefined, error.message);
-      logger.log('error', 'Failed to summarize Exa results', { error });
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logToolUsage('GPT-4o', 'summarize', { query, entitiesCount: exaResult.entities.length }, gptStart, false, undefined, errorMessage);
+      logger.log('error', 'Failed to summarize Exa results', { error: errorMessage });
       summary = exaResult.summary || exaResult.entities.map(r => r.name).join('; ');
     }
 
@@ -367,12 +370,13 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
       });
       
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       logToolUsage('HelixDB', 'createEntityWithDeduplication', {
         name: query,
         category: 'summary',
         source_query: query
-      }, cacheStart, false, undefined, error.message);
-      logger.log('error', 'Failed to cache summary in HelixDB', { error });
+      }, cacheStart, false, undefined, errorMessage);
+      logger.log('error', 'Failed to cache summary in HelixDB', { error: errorMessage });
       reasoning += ' Failed to cache summary.';
     }
 
@@ -392,20 +396,22 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
         entities: exaResult.entities
       });
     } catch (error) {
-      logger.log('warn', 'Failed to update context with results', { error: (error as Error).message });
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.log('warn', 'Failed to update context with results', { error: errorMessage });
     }
 
     return finalResult;
   } catch (error) {
     exaTime = Date.now() - exaStart;
-    logToolUsage('Exa', 'webSearch', { query, numResults: 3, searchType: 'neural' }, exaStart, false, undefined, error.message);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    logToolUsage('Exa', 'webSearch', { query, numResults: 3, searchType: 'neural' }, exaStart, false, undefined, errorMessage);
     
     return {
       answer: 'Sorry, I encountered an error while searching for information.',
       source: 'exa',
       cached: false,
       performance: { helixdbTime, exaTime, totalTime: Date.now() - startTime },
-      reasoning: `Error during web search: ${error.message}`,
+      reasoning: `Error during web search: ${errorMessage}`,
       toolUsage
     };
   }

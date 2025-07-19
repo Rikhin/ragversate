@@ -5,12 +5,12 @@ import { useState } from 'react';
 interface ToolUsage {
   tool: string;
   action: string;
-  parameters: any;
+  parameters: Record<string, unknown>;
   startTime: number;
   endTime: number;
   duration: number;
   success: boolean;
-  result?: any;
+  result?: unknown;
   error?: string;
 }
 
@@ -139,11 +139,12 @@ export default function SearchResults({ result, isLoading }: SearchResultsProps)
                   </pre>
                 </div>
 
-                {usage.success && usage.result && (
+                                {usage.success && usage.result && (
                   <div className="text-sm text-gray-600 mb-2">
                     <strong>Result:</strong>
                     <pre className="mt-1 p-2 bg-green-50 rounded text-xs overflow-x-auto">
-                      {JSON.stringify(usage.result, null, 2)}
+                      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                      {usage.result ? JSON.stringify(usage.result as any, null, 2) : 'No result'}
                     </pre>
                   </div>
                 )}
