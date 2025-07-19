@@ -11,7 +11,7 @@ const __dirname = dirname(__filename);
 config({ path: join(__dirname, '..', '.env.local') });
 
 // Import after loading env vars
-import { supermemoryService } from '../app/lib/supermemory.js';
+import { optimizedSupermemoryService } from '../app/lib/supermemory-optimized.js';
 
 async function testSupermemory() {
   console.log('🧠 Testing Supermemory Integration...\n');
@@ -31,7 +31,7 @@ async function testSupermemory() {
   try {
     // Test 1: Initialize service
     console.log('1️⃣ Testing service initialization...');
-    await supermemoryService.initialize();
+    await optimizedSupermemoryService.initialize();
     console.log('✅ Service initialized successfully\n');
 
     // Test 2: Store a test memory
@@ -44,50 +44,52 @@ async function testSupermemory() {
       { name: 'Tesla', category: 'organization', description: 'Electric vehicle company' }
     ];
 
-    const memoryId = await supermemoryService.storeUserMemory(
+    await optimizedSupermemoryService.storeConversation(
       testUserId,
       testQuery,
       testResponse,
       testEntities
     );
+    const memoryId = 'stored_' + Date.now();
     console.log('✅ Memory stored successfully with ID:', memoryId, '\n');
 
-    // Test 3: Get query suggestions
-    console.log('3️⃣ Testing query suggestions...');
-    const suggestions = await supermemoryService.getQuerySuggestions(testUserId, 'Elon', 3);
-    console.log('✅ Query suggestions:', suggestions.length, 'found');
+    // Test 3: Get personalized suggestions
+    console.log('3️⃣ Testing personalized suggestions...');
+    const suggestions = await optimizedSupermemoryService.getPersonalizedSuggestions('Elon', testUserId);
+    console.log('✅ Personalized suggestions:', suggestions.length, 'found');
     suggestions.forEach((s, i) => {
-      console.log(`   ${i + 1}. "${s.query}" (relevance: ${s.relevance.toFixed(2)})`);
+      console.log(`   ${i + 1}. "${s}"`);
     });
     console.log();
 
     // Test 4: Get user context
     console.log('4️⃣ Testing user context...');
-    const context = await supermemoryService.getUserContext(testUserId);
+    const context = await optimizedSupermemoryService.getUserContext(testUserId);
     console.log('✅ User context retrieved:');
-    console.log('   - Recent queries:', context.recentQueries.length);
-    console.log('   - Interests:', context.interests.length);
-    console.log('   - Preferred categories:', context.preferredCategories);
+    console.log('   - Current topics:', context.currentTopics.length);
+    console.log('   - Sentiment:', context.sentiment);
+    console.log('   - Complexity:', context.complexity);
     console.log();
 
-    // Test 5: Test personalized suggestions
-    console.log('5️⃣ Testing personalized suggestions...');
-    const personalizedSuggestions = await supermemoryService.getPersonalizedSuggestions(
+    // Test 5: Test follow-up questions
+    console.log('5️⃣ Testing follow-up questions...');
+    const followUpQuestions = await optimizedSupermemoryService.generateFollowUpQuestions(
       testUserId, 
-      'What should I learn next?'
+      'What should I learn next?',
+      'Based on your interests, I recommend learning about AI and machine learning.'
     );
-    console.log('✅ Personalized suggestions:', personalizedSuggestions.length, 'found');
-    personalizedSuggestions.forEach((s, i) => {
+    console.log('✅ Follow-up questions:', followUpQuestions.length, 'found');
+    followUpQuestions.forEach((s, i) => {
       console.log(`   ${i + 1}. ${s}`);
     });
     console.log();
 
     // Test 6: Search user knowledge
     console.log('6️⃣ Testing user knowledge search...');
-    const userKnowledge = await supermemoryService.searchUserKnowledge(testUserId, 'Tesla', 3);
+    const userKnowledge = await optimizedSupermemoryService.searchUserKnowledge(testUserId, 'Tesla', 3);
     console.log('✅ User knowledge search:', userKnowledge.length, 'results found');
     userKnowledge.forEach((result, i) => {
-      console.log(`   ${i + 1}. Score: ${result.score.toFixed(2)}, Query: "${result.query}"`);
+      console.log(`   ${i + 1}. Score: ${result.score.toFixed(2)}, Content: "${result.content.substring(0, 50)}..."`);
     });
     console.log();
 

@@ -3,17 +3,6 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { SWRConfig } from 'swr';
 import { swrConfig } from './lib/swr-config';
-import { startupOptimization } from '../scripts/startup-optimization';
-
-// Module-level flag to prevent multiple startup optimizations
-let startupOptimized = false;
-
-// Run startup optimization automatically (only once)
-if (typeof window === 'undefined' && !startupOptimized) {
-  // Only run on server side and only once
-  startupOptimized = true;
-  startupOptimization().catch(console.error);
-}
 
 const geistSans = Geist({
   variable: "--font-geist-sans",

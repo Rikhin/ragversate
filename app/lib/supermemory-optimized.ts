@@ -31,7 +31,7 @@ class OptimizedSupermemoryService {
   // Rate limiting and cost optimization
   private requestCount: number = 0;
   private lastReset: number = Date.now();
-  private readonly RATE_LIMIT_PER_MINUTE = 30; // Conservative limit
+  private readonly RATE_LIMIT_PER_MINUTE = 5; // Very conservative limit due to rate limiting
   private readonly RATE_LIMIT_WINDOW = 60000; // 1 minute
   
   // Local caching for cost efficiency
@@ -165,6 +165,9 @@ class OptimizedSupermemoryService {
 
   // Get user context with caching
   async getUserContext(userId: string): Promise<ConversationContext> {
+    // Ensure client is initialized
+    await this.initialize();
+    
     // Check cache first
     const cached = this.userContextCache.get(userId);
     if (cached && (Date.now() - cached.timestamp) < this.CACHE_TTL) {
@@ -202,6 +205,15 @@ class OptimizedSupermemoryService {
       return context;
     } catch (error) {
       console.error('Failed to get user context:', error);
+      
+      // Check if it's a rate limit error
+      if (error && typeof error === 'object' && 'status' in error) {
+        const apiError = error as { status?: number; error?: { error?: string } };
+        if (apiError.status === 401 || apiError.status === 402) {
+          console.log('⚠️ Supermemory rate limited or unauthorized, using default context');
+        }
+      }
+      
       return {
         userId,
         currentTopics: [],
@@ -216,6 +228,9 @@ class OptimizedSupermemoryService {
 
   // Search user knowledge efficiently
   async searchUserKnowledge(userId: string, query: string, limit: number = 3): Promise<any[]> {
+    // Ensure client is initialized
+    await this.initialize();
+    
     if (!this.checkRateLimit()) {
       return [];
     }
@@ -228,9 +243,9 @@ class OptimizedSupermemoryService {
       });
       
       return searchResult.results.map(result => ({
-        content: result.content,
-        score: result.score,
-        metadata: result.metadata
+        content: (result as any).text || (result as any).content || JSON.stringify(result),
+        score: (result as any).score || 0,
+        metadata: (result as any).metadata || {}
       }));
     } catch (error) {
       console.error('Failed to search user knowledge:', error);

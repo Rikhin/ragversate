@@ -157,7 +157,7 @@ function generateDescription(cleanedData: CleanedData): string {
 /**
  * Use AI to validate and enhance entity data
  */
-async function validateEntityWithAI(cleanedData) {
+async function validateEntityWithAI(cleanedData: CleanedData) {
   try {
     const prompt = `
 You are an expert at validating and enhancing researcher profile data. Given the following researcher information, determine if this is a high-quality, meaningful entity that should be stored in a knowledge base.
@@ -195,10 +195,16 @@ Guidelines:
       temperature: 0.2,
     });
 
-    const result = JSON.parse(response.choices[0].message.content);
+    const content = response.choices[0].message.content;
+    if (!content) {
+      throw new Error('No content received from OpenAI');
+    }
+    
+    const result = JSON.parse(content);
     return result;
   } catch (error) {
-    console.log(`⚠️ AI validation failed for ${cleanedData.name}:`, error.message);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.log(`⚠️ AI validation failed for ${cleanedData.name}:`, errorMessage);
     // Fallback to basic validation
     return {
       isValid: cleanedData.name.length > 2 && cleanedData.professionalSummary.length > 20,
@@ -214,7 +220,7 @@ Guidelines:
 /**
  * Check for duplicates
  */
-function isDuplicate(entity) {
+function isDuplicate(entity: ValidatedEntity) {
   const key = `${entity.name.toLowerCase()}_${entity.category}`;
   return processedEntities.has(key);
 }
@@ -222,16 +228,16 @@ function isDuplicate(entity) {
 /**
  * Process a single CSV file
  */
-async function processCSVFile(filePath) {
+async function processCSVFile(filePath: string) {
   console.log(`📁 Processing: ${path.basename(filePath)}`);
   
-  const results = [];
-  const validEntities = [];
+  const results: CSVRow[] = [];
+  const validEntities: ValidatedEntity[] = [];
   
-  return new Promise((resolve, reject) => {
+  return new Promise<ValidatedEntity[]>((resolve, reject) => {
     fs.createReadStream(filePath)
       .pipe(csv())
-      .on('data', (data) => results.push(data))
+      .on('data', (data: CSVRow) => results.push(data))
       .on('end', async () => {
         console.log(`   Found ${results.length} rows in ${path.basename(filePath)}`);
         
@@ -244,7 +250,7 @@ async function processCSVFile(filePath) {
           if (!cleanedData) continue;
           
           // Check for duplicates
-          if (isDuplicate(cleanedData)) {
+          if (isDuplicate(cleanedData as any)) {
             console.log(`   🔄 Skipping duplicate: ${cleanedData.name}`);
             continue;
           }
@@ -253,7 +259,7 @@ async function processCSVFile(filePath) {
           const validation = await validateEntityWithAI(cleanedData);
           
           if (validation.isValid && validation.confidence !== 'low') {
-            const entity = {
+            const entity: ValidatedEntity = {
               name: validation.enhancedName,
               description: validation.enhancedDescription,
               category: validation.category,
@@ -289,7 +295,7 @@ async function processCSVFile(filePath) {
 /**
  * Store entities in HelixDB
  */
-async function storeEntities(entities) {
+async function storeEntities(entities: ValidatedEntity[]) {
   console.log(`\n💾 Storing ${entities.length} entities in HelixDB...`);
   
   let successCount = 0;

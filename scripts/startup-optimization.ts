@@ -9,7 +9,7 @@ import { config } from 'dotenv';
 config({ path: '.env.local' });
 
 async function startupOptimization() {
-  console.log('🚀 Starting RAGversate optimization...');
+  console.log('🚀 Starting ragchat optimization...');
   
   try {
     // 1. Load popular entities from file

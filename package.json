@@ -1,5 +1,5 @@
 {
-  "name": "ragversate",
+  "name": "ragchat",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,6 +10,8 @@
     "lint": "next lint",
     "test:helixdb": "node scripts/test-helixdb.js",
     "test:supermemory": "npx tsx scripts/test-supermemory.js",
+    "test:context": "node scripts/test-context-engine.js",
+    "test:full": "node scripts/test-full-system.js",
     "setup:helixdb": "./scripts/setup-helixdb.sh",
     "setup:supermemory": "./scripts/setup-supermemory.sh",
     "show:cache": "npx tsx scripts/show-cache.js",

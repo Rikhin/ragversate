@@ -3,8 +3,11 @@ import { helixDB } from '@/app/lib/helixdb';
 
 export async function GET(req: NextRequest) {
   try {
-    // Check HelixDB connection
+    // Check HelixDB connection and cache status
     const helixStatus = await helixDB.healthCheck();
+    
+    // Check if cache is warmed by checking if we have entities in cache
+    const cacheWarmed = helixDB.isCacheWarmed();
     
     // Check environment variables
     const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
@@ -14,7 +17,10 @@ export async function GET(req: NextRequest) {
       status: 'ok',
       timestamp: new Date().toISOString(),
       services: {
-        helixdb: helixStatus ? 'connected' : 'disconnected',
+        helixdb: {
+          connected: helixStatus,
+          cacheWarmed: cacheWarmed
+        },
         openai: hasOpenAIKey ? 'configured' : 'missing_key',
         exa: hasExaKey ? 'configured' : 'missing_key'
       },
@@ -34,7 +40,10 @@ export async function GET(req: NextRequest) {
       timestamp: new Date().toISOString(),
       error: error instanceof Error ? error.message : 'Unknown error',
       services: {
-        helixdb: 'error',
+        helixdb: {
+          connected: false,
+          cacheWarmed: false
+        },
         openai: !!process.env.OPENAI_API_KEY ? 'configured' : 'missing_key',
         exa: !!process.env.EXA_API_KEY ? 'configured' : 'missing_key'
       }

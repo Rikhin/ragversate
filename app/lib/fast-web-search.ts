@@ -120,7 +120,9 @@ class FastWebSearchService {
       const result: FastSearchResult = {
         summary,
         entities,
-        followUpQuestions: followUpQuestions.status === 'fulfilled' ? followUpQuestions.value : [],
+        followUpQuestions: followUpQuestions.status === 'fulfilled' && Array.isArray(followUpQuestions.value) 
+          ? followUpQuestions.value as string[] 
+          : [],
         confidence: this.calculateConfidence(results),
         source: 'web',
         total: results.length
