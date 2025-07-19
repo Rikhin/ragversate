@@ -1,6 +1,19 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { SWRConfig } from 'swr';
+import { swrConfig } from './lib/swr-config';
+import { startupOptimization } from '../scripts/startup-optimization';
+
+// Module-level flag to prevent multiple startup optimizations
+let startupOptimized = false;
+
+// Run startup optimization automatically (only once)
+if (typeof window === 'undefined' && !startupOptimized) {
+  // Only run on server side and only once
+  startupOptimized = true;
+  startupOptimization().catch(console.error);
+}
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -19,15 +32,15 @@ export const metadata: Metadata = {
 
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode;
-}>) {
+}) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {children}
+      <body>
+        <SWRConfig value={swrConfig}>
+          {children}
+        </SWRConfig>
       </body>
     </html>
   );

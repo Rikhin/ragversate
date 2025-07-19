@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: 'gpt-3.5-turbo-0125', // Use cheaper/faster model for query parsing
       messages: [
         {
           role: 'system',

@@ -1,16 +1,37 @@
-import OpenAI from 'openai';
 import Exa from 'exa-js';
 import { NextRequest, NextResponse } from 'next/server';
 import { helixDB } from '@/app/lib/helixdb';
-import { supermemoryService } from '@/app/lib/supermemory';
-import { intelligentAgent } from '@/app/lib/intelligent-agent';
+import { optimizedSupermemoryService } from '@/app/lib/supermemory-optimized';
+import { fastWebSearch } from '@/app/lib/fast-web-search';
+import crypto from 'crypto';
+import { logApiCall, logCacheHit, logError, logInfo } from '@/app/lib/logging';
 
-// Start agent's proactive learning on API startup
-intelligentAgent.startProactiveLearning();
-
-// Initialize OpenAI and Exa clients
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Initialize Exa client (OpenAI is handled by fast web search service)
 const exa = new Exa(process.env.EXA_API_KEY);
+
+// API response cache for common queries
+const responseCache = new Map<string, { data: any; timestamp: number }>();
+const RESPONSE_CACHE_TTL = 300000; // 5 minutes
+
+function hashInput(input: any): string {
+  return crypto.createHash('sha256').update(JSON.stringify(input)).digest('hex');
+}
+
+// Check if response is cached
+function getCachedResponse(query: string, userId?: string): any | null {
+  const cacheKey = hashInput({ query, userId });
+  const cached = responseCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp) < RESPONSE_CACHE_TTL) {
+    return cached.data;
+  }
+  return null;
+}
+
+// Cache response
+function cacheResponse(query: string, userId: string | undefined, data: any): void {
+  const cacheKey = hashInput({ query, userId });
+  responseCache.set(cacheKey, { data, timestamp: Date.now() });
+}
 
 // Tool definitions for the agent - Optimized for maximum accuracy
 const tools = [
@@ -128,21 +149,12 @@ const tools = [
   }
 ];
 
-// Tool implementations
+// Tool implementations - Simplified since we use direct HelixDB calls
 async function searchKnowledgeBase(query: string, limit: number = 5) {
   console.log(`🔍 Searching knowledge base for: "${query}" (limit: ${limit})`);
   
   // Use semantic search for better results
   const result = await helixDB.semanticSearch(query, limit);
-  
-  // Also try graph traversal for related entities
-  if (result.entities.length > 0) {
-    const graphResult = await helixDB.traverseGraph(result.entities[0].name, 1, 3);
-    const relatedEntities = graphResult.entities.filter(e => 
-      !result.entities.some(existing => existing.id === e.id)
-    );
-    result.entities.push(...relatedEntities.slice(0, 2));
-  }
   
   return {
     found: result.entities.length > 0,
@@ -158,10 +170,37 @@ async function webSearch(
   useAutoprompt: boolean = true,
   includeDomains?: string[]
 ) {
-  console.log(`🌐 Web searching for: "${query}" (${numResults} results, ${searchType}, autoprompt: ${useAutoprompt})`);
+  console.log(`⚡ Fast web searching for: "${query}" (${numResults} results, ${searchType}, autoprompt: ${useAutoprompt})`);
   
-  // Optimize query for better results
-  const optimizedQuery = optimizeSearchQuery(query);
+  try {
+    // Use the fast web search service for optimized performance
+    const result = await fastWebSearch.search(query, {
+      numResults,
+      searchType: searchType as 'neural' | 'keyword',
+      useAutoprompt,
+      includeDomains,
+      enableEntityCaching: true,
+      enableParallelProcessing: true
+    });
+
+          // Convert to the expected format for backward compatibility
+      return {
+        results: result.entities.map(entity => ({
+          id: entity.name || `entity-${Date.now()}`, // Ensure ID is never empty
+          title: entity.name,
+          text: entity.description,
+          url: entity.url
+        })).filter(result => result.id && result.id.trim().length > 0), // Filter out empty results
+        total: result.total,
+        summary: result.summary,
+        followUpQuestions: result.followUpQuestions,
+        confidence: result.confidence
+      };
+  } catch (error) {
+    console.error('Fast web search failed, falling back to original:', error);
+    
+    // Fallback to original implementation if fast search fails
+    const optimizedQuery = query.replace(/^(who is|what is|tell me about|who was|what are|how is)/i, '').replace(/\?/g, '').trim();
   
   const searchOptions: {
     numResults: number;
@@ -169,886 +208,281 @@ async function webSearch(
     useAutoprompt?: boolean;
     includeDomains?: string[];
   } = { 
-    numResults: Math.min(numResults, 10), // Cap at 10
+      numResults: Math.min(numResults, 10),
     type: searchType as "neural" | "keyword",
     useAutoprompt: useAutoprompt
   };
   
-  // Add domain filtering if specified
   if (includeDomains && includeDomains.length > 0) {
     searchOptions.includeDomains = includeDomains;
   }
   
   const response = await exa.search(optimizedQuery, searchOptions);
-  const results = response.results || [];
-  
-  // Automatically extract and cache entities from search results
-  if (results.length > 0) {
-    try {
-      console.log('📄 Extracting content for automatic caching...');
-      const contentResponse = await exa.getContents(results.map(r => r.id));
-      
-      // Extract entities from the content with improved prompt
-      const entityExtractionResponse = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo-0125', // Use fastest model for entity extraction
-        messages: [
-          { 
-            role: 'system', 
-            content: `Extract all relevant entities from the provided text. Focus on entities that directly relate to the search query. Return a JSON object with an "entities" array: {"entities": [{"name": "entity name", "description": "brief description (max 150 words)", "category": "person|organization|place|concept|other"}]}. 
-
-IMPORTANT GUIDELINES:
-- For person names, use the most recognizable form (e.g., "Jeff Bezos" not "Jeffrey Preston Bezos")
-- Focus on entities mentioned in the search query or closely related
-- Ensure descriptions are factual and verified
-- Avoid duplicates and variations of the same entity
-- Prioritize entities that are central to the search topic` 
-          }, 
-          { 
-            role: 'user', 
-            content: `Search query: "${query}"\n\nText content:\n${contentResponse.results.map(r => r.text.substring(0, 1000)).join('\n\n---\n\n')}` 
-          }
-        ],
-        response_format: { type: "json_object" },
-        max_tokens: 300, // Reduced for speed
-        temperature: 0.3
-      });
-
-      const entityData = entityExtractionResponse.choices[0].message.content;
-      if (entityData) {
-        try {
-          const parsed = JSON.parse(entityData);
-          const entities = parsed.entities || parsed;
-          if (Array.isArray(entities)) {
-            console.log(`💾 Auto-caching ${entities.length} entities from web search...`);
-            
-            // Normalize and deduplicate entities before storing
-            const normalizedEntities = new Map();
-            
-            for (const entity of entities) {
-              if (entity.name && entity.description) {
-                // Normalize the name for deduplication
-                const normalizedName = entity.name.trim();
-                const key = `${normalizedName.toLowerCase()}_${entity.category || 'other'}`;
-                
-                // Only keep the first occurrence of each entity
-                if (!normalizedEntities.has(key)) {
-                  normalizedEntities.set(key, entity);
-                } else {
-                  console.log(`🔄 Skipping duplicate entity: ${entity.name}`);
-                }
-              }
-            }
-            
-            // Store unique entities in HelixDB
-            for (const entity of normalizedEntities.values()) {
-              try {
-                await helixDB.createEntity({
-                  name: entity.name,
-                  category: entity.category || 'other',
-                  source_query: query,
-                  description: entity.description
-                });
-                console.log(`✅ Cached: ${entity.name}`);
-              } catch (error) {
-                console.log(`⚠️ Failed to cache ${entity.name}:`, error instanceof Error ? error.message : 'Unknown error');
-              }
-            }
-          }
-        } catch (parseError) {
-          console.log('⚠️ Failed to parse entity extraction response:', parseError);
-        }
-      }
-    } catch (extractionError) {
-      console.log('⚠️ Failed to extract content for caching:', extractionError);
-    }
-  }
-  
-  return {
-    results: results,
-    total: results.length
-  };
-}
-
-// Optimize search query for better results
-function optimizeSearchQuery(query: string): string {
-  // Remove conversational elements
-  let optimized = query
-    .replace(/^(who is|what is|tell me about|who was|what are|how is)/i, '')
-    .replace(/\?/g, '')
-    .trim();
-  
-  // Add context for better results
-  if (optimized.length < 3) {
-    optimized = query; // Keep original if too short
-  }
-  
-  // Add quotes for exact name matching when appropriate
-  const namePattern = /^[A-Z][a-z]+ [A-Z][a-z]+$/;
-  if (namePattern.test(optimized)) {
-    optimized = `"${optimized}"`;
-  }
-  
-  return optimized;
-}
-
-async function extractContent(
-  resultIds: string[], 
-  maxCharsPerResult: number = 2000,
-  includeImages: boolean = false
-) {
-  console.log(`📄 Extracting content from ${resultIds.length} results (max ${maxCharsPerResult} chars each)`);
-  
-  const contentResponse = await exa.getContents(resultIds, {
-    text: { maxCharacters: maxCharsPerResult },
-    includeImages: includeImages
-  });
-  
-  return {
-    contents: contentResponse.results,
-    total: contentResponse.results.length
-  };
-}
-
-async function storeEntity(name: string, description: string, category: string, sourceQuery: string) {
-  console.log(`💾 Storing entity: ${name} (${category})`);
-  
-  try {
-    const entity = await helixDB.createEntity({
-      name: name,
-      category: category,
-      source_query: sourceQuery,
-      description: description
-    });
-    
     return {
-      success: true,
-      entity: entity
-    };
-  } catch (error) {
-    console.error('Failed to store entity:', error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
+      results: response.results || [],
+      total: response.results?.length || 0
     };
   }
+}
+
+// Removed unused functions: optimizeSearchQuery, extractContent, storeEntity, cachedOpenAICompletion, cachedEntityExtraction
+// These are now handled by the fast web search service and direct HelixDB calls
+
+// Simple rate limiter for API endpoints
+const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+const RATE_LIMIT_WINDOW = 60000; // 1 minute
+const RATE_LIMIT_MAX = 10; // Max 10 requests per minute
+
+function checkRateLimit(identifier: string): boolean {
+  const now = Date.now();
+  const userLimit = rateLimitMap.get(identifier);
+  
+  if (!userLimit || now > userLimit.resetTime) {
+    rateLimitMap.set(identifier, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
+    return true;
+  }
+  
+  if (userLimit.count >= RATE_LIMIT_MAX) {
+    return false;
+  }
+  
+  userLimit.count++;
+  return true;
 }
 
 export async function POST(req: NextRequest) {
-    const { query, userId } = await req.json();
+  const startTime = Date.now();
+  
+  // Rate limiting
+  const identifier = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown';
+  if (!checkRateLimit(identifier)) {
+    logError('rate_limit_exceeded', new Error('Rate limit exceeded'), { identifier });
+    return NextResponse.json(
+      { error: 'Rate limit exceeded. Please try again later.' },
+      { status: 429 }
+    );
+  }
 
-    if (!query || typeof query !== 'string' || query.trim().length === 0) {
-        return NextResponse.json({ 
-            error: 'Query is required and must be a non-empty string.' 
-        }, { status: 400 });
+  const { query, userId } = await req.json();
+
+  if (!query) {
+    logError('invalid_request', new Error('Query is required'));
+    return NextResponse.json({ error: 'Query is required' }, { status: 400 });
+  }
+
+  try {
+    // Initialize Optimized Supermemory for this user session
+    await optimizedSupermemoryService.initialize();
+    
+    // Get user context efficiently (cached)
+    const userContext = await optimizedSupermemoryService.getUserContext(userId);
+    
+    // Check cache first
+    const cachedResponse = getCachedResponse(query, userId);
+    if (cachedResponse) {
+      logCacheHit('api_response', true);
+      logInfo('Cache hit for query', { query, userId });
+      
+      // Store this interaction efficiently
+      await optimizedSupermemoryService.storeConversation(
+        userId,
+        query,
+        cachedResponse.summary,
+        cachedResponse.entities
+      );
+      
+      // Generate personalized follow-up questions
+      const followUpQuestions = await optimizedSupermemoryService.generateFollowUpQuestions(
+        userId, 
+        query, 
+        cachedResponse.summary
+      );
+      
+      // Get personalized suggestions
+      const personalizedSuggestions = await optimizedSupermemoryService.getPersonalizedSuggestions(userId, query);
+      
+      const enhancedResponse = {
+        ...cachedResponse,
+        followUpQuestions,
+        personalizedSuggestions,
+        userContext: {
+          currentTopics: userContext.currentTopics.slice(0, 3),
+          recentEntities: userContext.recentEntities.slice(0, 2),
+          sentiment: userContext.sentiment,
+          complexity: userContext.complexity
+        }
+      };
+      
+      const duration = Date.now() - startTime;
+      logApiCall('/api/get-answer', duration, true);
+      return NextResponse.json(enhancedResponse);
+    }
+    
+    logCacheHit('api_response', false);
+
+    // Search knowledge base first
+    const kbResult = await searchKnowledgeBase(query, 5);
+    
+    if (kbResult.found) {
+      const summary = `Found ${kbResult.entities.length} relevant entities for "${query}": ${kbResult.entities.map(e => e.name).join(', ')}.`;
+      
+      // Store this successful interaction efficiently
+      await optimizedSupermemoryService.storeConversation(
+        userId,
+        query,
+        summary,
+        kbResult.entities
+      );
+      
+      // Generate personalized follow-up questions
+      const followUpQuestions = await optimizedSupermemoryService.generateFollowUpQuestions(
+        userId, 
+        query, 
+        summary
+      );
+      
+      // Get personalized suggestions
+      const personalizedSuggestions = await optimizedSupermemoryService.getPersonalizedSuggestions(userId, query);
+      
+      const response = {
+        entities: kbResult.entities,
+        source: 'helixdb',
+        confidence: 'high',
+        total: kbResult.total,
+        summary: summary,
+        followUpQuestions,
+        personalizedSuggestions,
+        userContext: {
+          currentTopics: userContext.currentTopics.slice(0, 3),
+          recentEntities: userContext.recentEntities.slice(0, 2),
+          sentiment: userContext.sentiment,
+          complexity: userContext.complexity
+        }
+      };
+      
+      // Cache the enhanced response
+      cacheResponse(query, userId, response);
+      
+      const duration = Date.now() - startTime;
+      logApiCall('/api/get-answer', duration, true);
+      return NextResponse.json(response);
     }
 
-    // Generate userId if not provided (for backward compatibility)
-    const finalUserId = userId || `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // If not found in cache, perform web search and generate summary
+    logInfo('Cache miss, performing web search', { query });
+    
+    const webResult = await webSearch(query, 3, "neural", true);
+    
+    if (webResult.results && webResult.results.length > 0) {
+      // Use the summary and follow-up questions already generated by fast web search
+      const summary = webResult.summary || 'Information found for your query.';
+      const followUpQuestions = webResult.followUpQuestions || [];
 
-    try {
-        console.log('🤖 Agent processing query:', query);
-
-        // FIRST: Check HelixDB cache for high-confidence matches
-        console.log('🔍 Checking global HelixDB cache first...');
-        const cachedResults = await searchKnowledgeBase(query, 10);
-        
-        // If we have high-confidence cached results, return them directly
-        if (cachedResults.found && cachedResults.entities.length >= 2) {
-            const highConfidenceEntities = cachedResults.entities.filter(entity => {
-                const nameLower = entity.name.toLowerCase();
-                const queryLower = query.toLowerCase();
-                const descriptionLower = entity.description.toLowerCase();
-                
-                // High confidence: exact name match or name contains query
-                return nameLower === queryLower || 
-                       nameLower.includes(queryLower) || 
-                       queryLower.includes(nameLower) ||
-                       descriptionLower.includes(queryLower);
-            });
-            
-            if (highConfidenceEntities.length >= 1) {
-                console.log(`🎯 Found ${highConfidenceEntities.length} high-confidence cached entities - returning directly from HelixDB!`);
-                
-                // Generate response directly from cached data without OpenAI
-                const cachedResponse = generateResponseFromCache(query, highConfidenceEntities);
-                
-                // Create streaming response with cached data
-                const encoder = new TextEncoder();
-                const stream = new ReadableStream({
-                    async start(controller) {
-                        try {
-                            // Send metadata indicating cache hit
-                            const metadata = {
-                                source: 'helixdb_cache',
-                                confidence: 'high',
-                                entities_found: highConfidenceEntities.length,
-                                tools_used: ['search_knowledge_base']
-                            };
-                            
-                            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'metadata', data: metadata })}\n\n`));
-
-                            // Stream the cached response
-                            const words = cachedResponse.split(' ');
-                            for (let i = 0; i < words.length; i++) {
-                                const word = words[i];
-                                const isLastWord = i === words.length - 1;
-                                
-                                controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-                                    type: 'content',
-                                    data: word + (isLastWord ? '' : ' ')
-                                })}\n`));
-                                
-                                // Small delay for natural streaming effect
-                                await new Promise(resolve => setTimeout(resolve, 20)); // Faster for cached results
-                            }
-
-                            // Generate follow-up suggestions from cached data
-                            const followUpSuggestions = generateFollowUpFromCache(query, highConfidenceEntities);
-                            if (followUpSuggestions.length > 0) {
-                                controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-                                    type: 'followUpSuggestions',
-                                    suggestions: followUpSuggestions
-                                })}\n`));
-                            }
-
-                            // Send completion signal
-                            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
-                            controller.close();
-                        } catch (error) {
-                            console.error('Streaming error:', error);
-                            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', data: 'Error streaming cached response' })}\n\n`));
-                            controller.close();
-                        }
-                    }
-                });
-
-                return new Response(stream, {
-                    headers: {
-                        'Content-Type': 'text/plain; charset=utf-8',
-                        'Cache-Control': 'no-cache',
-                        'Connection': 'keep-alive',
-                    },
-                });
-            }
-        }
-
-        // If no high-confidence cache hit, proceed with agent-based approach
-        console.log('🔄 No high-confidence cache hit, proceeding with agent-based search...');
-
-        // Agent system prompt - Optimized for 100% accuracy and perfection
-        const systemPrompt = `You are an expert RAG (Retrieval-Augmented Generation) agent with exceptional accuracy and precision. Your mission is to provide flawless, comprehensive, and engaging responses to user queries about entities (people, organizations, places, concepts, events, etc.).
-
-## CORE PRINCIPLES
-- **Accuracy First**: Never guess or make assumptions. If information is uncertain, clearly state limitations.
-- **Completeness**: Provide comprehensive information that fully addresses the user's query.
-- **Verification**: Cross-reference information when possible to ensure accuracy.
-- **Transparency**: Always cite sources and indicate confidence levels.
-
-## TOOL STRATEGY (CRITICAL FOR ACCURACY)
-
-### 1. search_knowledge_base
-**When to use**: ALWAYS start here for every query
-**Why**: Fast, free, and contains verified information
-**Parameters**: 
-- query: Use the exact user query or optimized version
-- limit: 5-10 results (more for complex queries, fewer for simple ones)
-
-### 2. web_search
-**When to use**: 
-- Knowledge base has insufficient information (MOST COMMON CASE)
-- Query requires current/recent information
-- Need to verify or expand on knowledge base results
-- Complex queries requiring multiple sources
-- ANY query where knowledge base doesn't provide complete answer
-**CRITICAL**: If knowledge base search returns no results or insufficient information, you MUST use web_search to find the information. Never give generic "no information available" responses.
-**Parameters**:
-- query: Optimize for search engines (remove conversational elements)
-- num_results: 3-8 based on complexity (simple: 3, complex: 8)
-- search_type: "neural" for semantic understanding, "keyword" for exact matches
-
-### 3. extract_content
-**When to use**: After web_search when you need detailed information
-**Why**: Get full context from search results
-**Parameters**:
-- result_ids: Use all relevant search result IDs
-- max_chars_per_result: 2000-3000 for comprehensive coverage
-
-### 4. store_entity
-**When to use**: After discovering new, verified information
-**Why**: Improve future response speed and accuracy
-**Parameters**: Ensure all fields are accurate and complete
-**CRITICAL**: Always store new entities you discover. This builds the knowledge base for future queries.
-
-## DECISION-MAKING FRAMEWORK
-
-### Query Analysis Phase
-1. **Categorize the query**: Person, organization, place, concept, event, etc.
-2. **Assess complexity**: Simple fact-check vs. comprehensive analysis
-3. **Determine information needs**: Basic facts, current status, historical context, etc.
-
-### Tool Selection Logic
-1. **Start with knowledge base** (5-10 results)
-2. **Evaluate knowledge base results**:
-   - If comprehensive match found → Use directly
-   - If partial match → Supplement with web search
-   - If no match → Proceed to web search
-3. **Web search strategy**:
-   - Simple queries: 3-5 results
-   - Complex queries: 5-8 results
-   - Controversial topics: 6-8 results for balanced perspective
-4. **Content extraction**: When detailed analysis needed
-5. **Storage**: Always store new, verified entities
-
-## RESPONSE QUALITY STANDARDS
-
-### Content Requirements
-- **Accuracy**: 100% factual accuracy - no speculation
-- **Completeness**: Address all aspects of the user's query
-- **Relevance**: Focus on what the user actually asked
-- **Depth**: Provide sufficient detail without overwhelming
-- **Currency**: Indicate if information is current or historical
-
-### Response Structure
-1. **Direct Answer**: Start with a clear, direct response to the query
-2. **Key Facts**: Present essential information in logical order
-3. **Context**: Provide relevant background and context
-4. **Current Status**: Include recent developments if applicable
-5. **Confidence Level**: Indicate certainty about different aspects
-
-### Language Guidelines
-- **Professional yet engaging**: Maintain academic rigor while being accessible
-- **Clear and concise**: Avoid jargon unless necessary
-- **Balanced perspective**: Present multiple viewpoints for controversial topics
-- **Source attribution**: Mention information sources when relevant
-
-## ERROR PREVENTION
-- **Double-check entity names**: Ensure exact spelling and full names
-- **Verify dates and facts**: Cross-reference critical information
-- **Handle ambiguity**: Ask for clarification if query is unclear
-- **Acknowledge limitations**: Be honest about what you don't know
-
-## SPECIAL CASES
-- **Recent events**: Prioritize current information
-- **Controversial topics**: Present balanced perspectives
-- **Technical subjects**: Provide both high-level and detailed explanations
-- **Ambiguous queries**: Ask clarifying questions or provide multiple interpretations
-
-Remember: Your goal is to be the most accurate, reliable, and helpful information source possible. Every response should reflect the highest standards of quality and precision.
-
-**AUTOMATIC CACHING**: The system automatically extracts and caches entities from web search results to improve future performance.
-
-**CACHING PRIORITY**: Always check cached knowledge base first. Only use web search when cached information is insufficient or outdated.`;
-
-        // Get user context from Supermemory for personalization
-        let userContext = null;
-        try {
-            userContext = await supermemoryService.getUserContext(userId);
-            console.log(`👤 User context loaded: ${userContext.recentQueries.length} recent queries, ${userContext.preferredCategories.length} preferred categories`);
-        } catch (error) {
-            console.log('⚠️ Failed to load user context:', error instanceof Error ? error.message : 'Unknown error');
-        }
-
-        // Enhance system prompt with user context for personalization
-        let enhancedSystemPrompt = systemPrompt;
-        if (userContext) {
-            const contextInfo = `
-USER CONTEXT:
-- Recent queries: ${userContext.recentQueries.slice(0, 3).join(', ')}
-- Preferred categories: ${userContext.preferredCategories.join(', ')}
-- Query patterns: ${userContext.queryPatterns.slice(0, 2).join(', ')}
-
-Use this context to provide more personalized and relevant responses. If the user asks about similar topics to their recent queries, reference those connections. Focus on their preferred categories when relevant.
-`;
-            enhancedSystemPrompt = systemPrompt + contextInfo;
-        }
-
-        // Determine the best model based on query complexity
-        const isComplexQuery = query.length > 50 || 
-                              query.toLowerCase().includes('compare') || 
-                              query.toLowerCase().includes('analyze') ||
-                              query.toLowerCase().includes('explain') ||
-                              query.toLowerCase().includes('how') ||
-                              query.toLowerCase().includes('why');
-        
-        const selectedModel = isComplexQuery ? 'gpt-4o' : 'gpt-4o-mini';
-        
-        console.log(`🤖 Using model: ${selectedModel} (complexity: ${isComplexQuery ? 'high' : 'low'})`);
-
-        // Initial agent call to decide what to do
-        const agentResponse = await openai.chat.completions.create({
-            model: selectedModel,
-            messages: [
-                { role: 'system', content: enhancedSystemPrompt },
-                { role: 'user', content: `User query: "${query}"\n\nCRITICAL INSTRUCTIONS:\n1. ALWAYS start with search_knowledge_base\n2. If knowledge base has insufficient or no results, you MUST use web_search\n3. NEVER give generic "no information available" responses\n4. Always provide specific, actionable information\n5. Use web_search for current information, verification, or when knowledge base is insufficient\n6. ALWAYS use store_entity to cache new information you discover\n7. Prioritize cached knowledge over web searches when available\n8. For specific queries like "historians in indiana that are professors", if knowledge base doesn't have exact matches, use web_search to find current information\n9. If you only find general information in knowledge base (like university names), use web_search to find specific details\n\nRemember: Your goal is to provide complete, accurate answers. If you don't find information in the knowledge base, search the web.` }
-            ],
-            tools: tools,
-            tool_choice: "auto",
-            max_tokens: isComplexQuery ? 2000 : 1500, // Adjust tokens based on complexity
-            temperature: 0.3 // Lower temperature for more consistent responses
-        });
-
-        const message = agentResponse.choices[0].message;
-        const toolCalls = message.tool_calls || [];
-
-        // Execute tool calls in parallel where possible
-        const toolResults: Array<{
-            tool_call_id: string;
-            role: "tool";
-            name: string;
-            content: string;
-        }> = [];
-        
-        let knowledgeBaseResults = null;
-        let hasWebSearch = false;
-        
-        // Group tool calls by dependency
-        const searchCalls = toolCalls.filter(tc => tc.function.name === 'search_knowledge_base');
-        const webSearchCalls = toolCalls.filter(tc => tc.function.name === 'web_search');
-        const extractCalls = toolCalls.filter(tc => tc.function.name === 'extract_content');
-        const storeCalls = toolCalls.filter(tc => tc.function.name === 'store_entity');
-        
-        // Execute search calls first (they can run in parallel)
-        const searchPromises = searchCalls.map(async (toolCall) => {
-            const args = JSON.parse(toolCall.function.arguments);
-            console.log(`🔧 Executing tool: ${toolCall.function.name}`, args);
-            
-            const result = await searchKnowledgeBase(args.query, args.limit);
-            knowledgeBaseResults = result;
-            
-            // If we found good results in HelixDB, skip web search
-            if (result.found && result.entities.length >= 2) {
-                console.log(`✅ Found ${result.entities.length} entities in global HelixDB cache - skipping web search`);
-                hasWebSearch = true; // Mark as "handled" to prevent forced web search
-            }
-            
-            return {
-                tool_call_id: toolCall.id,
-                role: "tool" as const,
-                name: toolCall.function.name,
-                content: JSON.stringify(result)
-            };
-        });
-        
-        // Wait for search results
-        const searchResults = await Promise.all(searchPromises);
-        toolResults.push(...searchResults);
-        
-        // Execute web search calls (can run in parallel with each other)
-        const webSearchPromises = webSearchCalls.map(async (toolCall) => {
-            const args = JSON.parse(toolCall.function.arguments);
-            console.log(`🔧 Executing tool: ${toolCall.function.name}`, args);
-            
-            const result = await webSearch(args.query, args.num_results, args.search_type, args.use_autoprompt, args.include_domains);
-            hasWebSearch = true;
-            
-            return {
-                tool_call_id: toolCall.id,
-                role: "tool" as const,
-                name: toolCall.function.name,
-                content: JSON.stringify(result)
-            };
-        });
-        
-        // Execute extract calls (can run in parallel)
-        const extractPromises = extractCalls.map(async (toolCall) => {
-            const args = JSON.parse(toolCall.function.arguments);
-            console.log(`🔧 Executing tool: ${toolCall.function.name}`, args);
-            
-            const result = await extractContent(args.result_ids, args.max_chars_per_result, args.include_images);
-            
-            return {
-                tool_call_id: toolCall.id,
-                role: "tool" as const,
-                name: toolCall.function.name,
-                content: JSON.stringify(result)
-            };
-        });
-        
-        // Execute store calls (can run in parallel)
-        const storePromises = storeCalls.map(async (toolCall) => {
-            const args = JSON.parse(toolCall.function.arguments);
-            console.log(`🔧 Executing tool: ${toolCall.function.name}`, args);
-            
-            const result = await storeEntity(args.name, args.description, args.category, args.source_query);
-            
-            return {
-                tool_call_id: toolCall.id,
-                role: "tool" as const,
-                name: toolCall.function.name,
-                content: JSON.stringify(result)
-            };
-        });
-        
-        // Wait for all parallel operations
-        const [webSearchResults, extractResults, storeResults] = await Promise.all([
-            Promise.all(webSearchPromises),
-            Promise.all(extractPromises),
-            Promise.all(storePromises)
-        ]);
-        
-        toolResults.push(...webSearchResults, ...extractResults, ...storeResults);
-
-        // Force web search if knowledge base has insufficient results
-        const hasKnowledgeBaseSearch = toolCalls.some(tc => tc.function.name === 'search_knowledge_base');
-        
-        // If agent didn't search knowledge base, do it first
-        if (!hasKnowledgeBaseSearch) {
-            console.log('🔍 Agent did not search knowledge base. Forcing knowledge base search first...');
-            const kbResults = await searchKnowledgeBase(query, 5);
-            knowledgeBaseResults = kbResults;
-            
-            if (kbResults.found && kbResults.entities.length >= 2) {
-                console.log('✅ Found sufficient cached entities, no need for web search');
-                hasWebSearch = true; // Mark as handled
-            }
-        }
-        
-        // Force web search if we have NO results, very few results, or no high-confidence matches
-        const hasHighConfidenceResults = knowledgeBaseResults && knowledgeBaseResults.entities.some(entity => {
-            const nameLower = entity.name.toLowerCase();
-            const queryLower = query.toLowerCase();
-            return nameLower === queryLower || 
-                   nameLower.includes(queryLower) || 
-                   queryLower.includes(nameLower);
-        });
-        
-        if (!hasWebSearch && (!knowledgeBaseResults || knowledgeBaseResults.entities.length === 0 || knowledgeBaseResults.entities.length < 2 || !hasHighConfidenceResults)) {
-            console.log('🔄 Insufficient cached results. Forcing web search for comprehensive results...');
-            
-            // Execute the web search directly
-            const webSearchResult = await webSearch(query, 5, 'neural', true, []);
-            
-            // Add web search result to tool results
-            toolResults.push({
-                tool_call_id: 'forced-web-search',
-                role: "tool" as const,
-                name: 'web_search',
-                content: JSON.stringify(webSearchResult)
-            });
-            
-            console.log('✅ Forced web search completed with', webSearchResult.total, 'results');
-            
-            // Force entity extraction and storage for forced web searches
-            if (webSearchResult.results && webSearchResult.results.length > 0) {
-                console.log('📄 Extracting content for forced web search caching...');
-                try {
-                    const contentResponse = await exa.getContents(webSearchResult.results.map(r => r.id));
-                    
-                    // Extract entities from the content
-                    const entityExtractionResponse = await openai.chat.completions.create({
-                        model: 'gpt-3.5-turbo-0125', // Use fastest model for entity extraction
-                        messages: [
-                            { 
-                                role: 'system', 
-                                content: `Extract all relevant entities from the provided text. Return a JSON object with an "entities" array: {"entities": [{"name": "entity name", "description": "brief description (max 150 words)", "category": "person|organization|place|concept|other"}]}. 
-
-IMPORTANT: For person names, use the most complete and standard form (e.g., "Jeff Bezos" not "Jeffrey Preston Bezos", "Elon Musk" not "Elon Reeve Musk"). Avoid variations and nicknames. Focus on entities that match the search query.` 
-                            }, 
-                            { 
-                                role: 'user', 
-                                content: `Search query: "${query}"\n\nText content:\n${contentResponse.results.map(r => r.text.substring(0, 1000)).join('\n\n---\n\n')}` 
-                            }
-                        ],
-                        response_format: { type: "json_object" },
-                        max_tokens: 300, // Reduced for speed
-                        temperature: 0.3
-                    });
-
-                    const entityData = entityExtractionResponse.choices[0].message.content;
-                    if (entityData) {
-                        try {
-                            const parsed = JSON.parse(entityData);
-                            const entities = parsed.entities || parsed;
-                            if (Array.isArray(entities)) {
-                                console.log(`💾 Auto-caching ${entities.length} entities from forced web search...`);
-                                
-                                // Normalize and deduplicate entities before storing
-                                const normalizedEntities = new Map();
-                                
-                                for (const entity of entities) {
-                                    if (entity.name && entity.description) {
-                                        // Normalize the name for deduplication
-                                        const normalizedName = entity.name.trim();
-                                        const key = `${normalizedName.toLowerCase()}_${entity.category || 'other'}`;
-                                        
-                                        // Only keep the first occurrence of each entity
-                                        if (!normalizedEntities.has(key)) {
-                                            normalizedEntities.set(key, entity);
-                                        } else {
-                                            console.log(`🔄 Skipping duplicate entity: ${entity.name}`);
-                                        }
-                                    }
-                                }
-                                
-                                // Store unique entities in HelixDB (GLOBAL PERMANENT CACHE)
-                                const storagePromises = [];
-                                for (const entity of normalizedEntities.values()) {
-                                    storagePromises.push(
-                                        helixDB.createEntity({
-                                            name: entity.name,
-                                            category: entity.category || 'other',
-                                            source_query: query,
-                                            description: entity.description
-                                        }).then(() => {
-                                            console.log(`✅ Cached globally: ${entity.name}`);
-                                        }).catch((error) => {
-                                            console.log(`⚠️ Failed to cache ${entity.name}:`, error instanceof Error ? error.message : 'Unknown error');
-                                        })
-                                    );
-                                }
-                                
-                                // Execute all storage operations in parallel
-                                await Promise.allSettled(storagePromises);
-                            }
-                        } catch (parseError) {
-                            console.log('⚠️ Failed to parse entity extraction response:', parseError);
-                        }
-                    }
-                } catch (extractionError) {
-                    console.log('⚠️ Failed to extract content for caching:', extractionError);
-                }
-            }
-        } else if (knowledgeBaseResults && knowledgeBaseResults.entities.length >= 2) {
-            console.log(`🎯 Using ${knowledgeBaseResults.entities.length} cached entities from global HelixDB - no web search needed!`);
-        }
-
-        // Create streaming response
-        const encoder = new TextEncoder();
-        const stream = new ReadableStream({
-            async start(controller) {
-                try {
-                    // Send initial metadata
-                    const metadata = {
-                        source: 'agent',
-                        confidence: 'high',
-                        tools_used: [...toolCalls.map(tc => tc.function.name), ...(toolResults.some(tr => tr.name === 'web_search') ? ['web_search'] : [])]
-                    };
-                    
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'metadata', data: metadata })}\n\n`));
-
-                    // Generate streaming response using tool results
-                    const stream = await openai.chat.completions.create({
-                        model: 'gpt-4o',
-                        messages: [
-                            { role: 'system', content: enhancedSystemPrompt },
-                            { role: 'user', content: `User query: "${query}"` },
-                            message,
-                            ...toolResults,
-                            { 
-                                role: 'user', 
-                                content: `Based on the tool results above, provide a flawless, comprehensive response to the user's query: "${query}". 
-
-CRITICAL REQUIREMENTS:
-- Start with a direct, accurate answer to the query
-- Present information in logical order: key facts → context → current status
-- Ensure 100% factual accuracy - no speculation or assumptions
-- Include relevant dates, names, and specific details
-- If information is uncertain or limited, clearly state this
-- For controversial topics, present balanced perspectives
-- Use professional yet engaging language
-- Provide sufficient detail without overwhelming (150-250 words)
-- Indicate confidence levels for different aspects of the response
-- If multiple sources were used, synthesize information coherently
-
-Begin your response immediately with the most important information.` 
-                            }
-                        ],
-                        max_tokens: 400,
-                        temperature: 0.7,
-                        stream: true
-                    });
-
-                    let fullResponse = '';
-                    for await (const chunk of stream) {
-                        const content = chunk.choices[0]?.delta?.content;
-                        if (content) {
-                            fullResponse += content;
-                            // Send only the new content to prevent duplication
-                            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', data: content })}\n\n`));
-                        }
-                    }
-
-                    // Generate follow-up suggestions based on the response
-                    let followUpSuggestions: string[] = [];
-                    try {
-                      const suggestionsResponse = await openai.chat.completions.create({
-                        model: 'gpt-3.5-turbo-0125', // Fastest 3.5 model for suggestions
-                        messages: [
-                          {
-                            role: 'system',
-                            content: `Generate 3-4 natural follow-up questions based on the user's query and response. Focus on:
-1. Related topics the user might be interested in
-2. Deeper aspects of the main topic
-3. Current developments or recent news
-4. Practical applications or implications
-
-Keep suggestions concise (max 8 words each) and natural. Return as JSON: {"suggestions": ["suggestion1", "suggestion2", "suggestion3"]}`
-                          },
-                          {
-                            role: 'user',
-                            content: `User query: "${query}"\n\nResponse: "${fullResponse}"\n\nGenerate follow-up suggestions.`
-                          }
-                        ],
-                        response_format: { type: "json_object" },
-                        max_tokens: 100, // Reduced for speed
-                        temperature: 0.7
-                      });
-
-                      const suggestionsData = suggestionsResponse.choices[0].message.content;
-                      if (suggestionsData) {
-                        const parsed = JSON.parse(suggestionsData);
-                        followUpSuggestions = parsed.suggestions || [];
-                      }
-                    } catch (error) {
-                      console.log('Failed to generate follow-up suggestions:', error);
-                      // Fallback suggestions
-                      followUpSuggestions = [
-                        'Tell me more about this topic',
-                        'What are the latest developments?',
-                        'How does this compare to similar cases?'
-                      ];
-                    }
-
-                    // Store user memory in Supermemory (async, don't wait)
-                    if (userId) {
-                      try {
-                        // Extract entities from the response for memory storage
-                        const entityExtractionResponse = await openai.chat.completions.create({
-                          model: 'gpt-3.5-turbo-0125', // Fastest model for entity extraction
-                          messages: [
-                            {
-                              role: 'system',
-                              content: `Extract key entities mentioned in the response. Return JSON: {"entities": [{"name": "entity", "category": "person|organization|place|concept", "description": "brief description"}]}. Focus on main entities only.`
-                            },
-                            {
-                              role: 'user',
-                              content: `Response: "${fullResponse}"`
-                            }
-                          ],
-                          response_format: { type: "json_object" },
-                          max_tokens: 150, // Reduced for speed
-                          temperature: 0.3
-                        });
-
-                        const entityData = entityExtractionResponse.choices[0].message.content;
-                        if (entityData) {
-                          const parsed = JSON.parse(entityData);
-                          const entities = parsed.entities || [];
-                          
-                          // Store in Supermemory
-                          await supermemoryService.storeUserMemory(
+      // Store this web search interaction efficiently
+      await optimizedSupermemoryService.storeConversation(
+        userId,
+        query,
+        summary,
+        webResult.results.slice(0, 3).map(r => ({
+          name: r.title || 'Unknown',
+          category: 'other',
+          description: r.text?.substring(0, 200) || 'No description available'
+        }))
+      );
+      
+      // Generate additional personalized follow-up questions if needed
+      const additionalFollowUpQuestions = await optimizedSupermemoryService.generateFollowUpQuestions(
+        userId, 
+        query, 
+        summary
+      );
+      
+      // Get personalized suggestions
+      const personalizedSuggestions = await optimizedSupermemoryService.getPersonalizedSuggestions(userId, query);
+      
+      // Search user's personal knowledge for related information
+      const userKnowledge = await optimizedSupermemoryService.searchUserKnowledge(userId, query, 2);
+      
+      const response = {
+        entities: webResult.results.slice(0, 3).map(r => ({
+          name: r.title || 'Unknown',
+          description: r.text?.substring(0, 200) || 'No description available',
+          category: 'other',
+          source: 'web',
+          url: r.url
+        })),
+        source: 'web',
+        confidence: 'medium',
+        total: webResult.results.length,
+        summary: summary,
+        followUpQuestions,
+        personalizedSuggestions,
+        userContext: {
+          currentTopics: userContext.currentTopics.slice(0, 3),
+          recentEntities: userContext.recentEntities.slice(0, 2),
+          sentiment: userContext.sentiment,
+          complexity: userContext.complexity
+        },
+        relatedUserKnowledge: userKnowledge.length > 0 ? userKnowledge.slice(0, 2) : undefined
+      };
+      
+      // Cache the enhanced response
+      cacheResponse(query, userId, response);
+      
+      const duration = Date.now() - startTime;
+      logApiCall('/api/get-answer', duration, true);
+      return NextResponse.json(response);
+    } else {
+      // No web results found, provide helpful response
+      const summary = `I couldn't find specific information about "${query}". This might be a very specific or unusual query. Try rephrasing your question or searching for related terms.`;
+      
+      // Store this interaction efficiently (even failed searches are valuable)
+      await optimizedSupermemoryService.storeConversation(
                             userId,
                             query,
-                            fullResponse,
-                            entities,
-                            {
-                              queryType: 'direct',
-                              entitiesFound: entities.length
-                            }
-                          );
-                        }
-                      } catch (error) {
-                        console.log('Failed to store user memory:', error);
-                      }
-                    }
-
-                    // Send follow-up suggestions
-                    if (followUpSuggestions.length > 0) {
-                      controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-                        type: 'followUpSuggestions',
-                        suggestions: followUpSuggestions
-                      })}\n`));
-                    }
-
-                    // Get proactive suggestions from the agent and stream them
-                    const agentSuggestions = await intelligentAgent.getProactiveSuggestions(userId, query);
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-                      type: 'proactiveSuggestions',
-                      suggestions: agentSuggestions
-                    })}\n`));
-
-                    // Send completion signal
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
-                    controller.close();
-                } catch (error) {
-                    console.error('Streaming error:', error);
-                    let errorMessage = 'An error occurred while generating the response.';
-                    
-                    if (error instanceof Error) {
-                        if (error.message.includes('Invalid parameter: messages with role')) {
-                            errorMessage = 'The agent encountered an issue with tool usage. Please try rephrasing your query.';
-                        } else if (error.message.includes('rate limit')) {
-                            errorMessage = 'Service is temporarily busy. Please try again in a moment.';
-                        } else {
-                            errorMessage = `Error: ${error.message}`;
-                        }
-                    }
-                    
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', data: errorMessage })}\n\n`));
-                    controller.close();
-                }
-            }
-        });
-
-        return new Response(stream, {
-            headers: {
-                'Content-Type': 'text/plain; charset=utf-8',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-            },
-        });
-
-    } catch (error) {
-        console.error('❌ Agent error:', error);
-        
-        if (error instanceof Error) {
-            return NextResponse.json({ 
-                error: error.message 
-            }, { status: 500 });
+        summary,
+        []
+      );
+      
+      // Get personalized suggestions for alternative queries
+      const personalizedSuggestions = await optimizedSupermemoryService.getPersonalizedSuggestions(userId, query);
+      
+      const response = {
+        entities: [],
+        source: 'none',
+        confidence: 'low',
+        total: 0,
+        summary: summary,
+        personalizedSuggestions,
+        userContext: {
+          currentTopics: userContext.currentTopics.slice(0, 3),
+          recentEntities: userContext.recentEntities.slice(0, 2),
+          sentiment: userContext.sentiment,
+          complexity: userContext.complexity
         }
-        
-        return NextResponse.json({ 
-            error: 'An unknown error occurred while processing your request.' 
-        }, { status: 500 });
-    } finally {
-        // Clear request cache after each request
-        helixDB.clearRequestCache();
+      };
+      
+      const duration = Date.now() - startTime;
+      logApiCall('/api/get-answer', duration, true);
+      return NextResponse.json(response);
     }
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    logApiCall('/api/get-answer', duration, false);
+    logError('api_error', error instanceof Error ? error : new Error(String(error)), { query, userId });
+    
+    // Provide graceful fallback response
+    const fallbackResponse = {
+      entities: [],
+      source: 'error',
+      confidence: 'low',
+      total: 0,
+      summary: `I encountered an issue while searching for "${query}". Please try again in a moment, or rephrase your question.`
+    };
+    
+    return NextResponse.json(fallbackResponse, { status: 200 }); // Return 200 with fallback instead of 500
+  }
 }
 
-// Helper function to generate response directly from cached data
-function generateResponseFromCache(query: string, entities: Array<{name: string; description: string; category: string}>): string {
-    const mainEntity = entities[0];
-    const queryLower = query.toLowerCase();
-    
-    // Determine response type based on query
-    if (queryLower.includes('who is') || queryLower.includes('tell me about')) {
-        return `${mainEntity.name} is ${mainEntity.description}. ${entities.length > 1 ? `Related entities include ${entities.slice(1, 3).map(e => e.name).join(', ')}.` : ''}`;
-    } else if (queryLower.includes('what is') || queryLower.includes('define')) {
-        return `${mainEntity.name} refers to ${mainEntity.description}.`;
-    } else {
-        return `Based on cached information: ${mainEntity.name} - ${mainEntity.description}. ${entities.length > 1 ? `Additional related information includes ${entities.slice(1, 2).map(e => e.name).join(', ')}.` : ''}`;
-    }
-}
-
-// Helper function to generate follow-up suggestions from cached data
-function generateFollowUpFromCache(query: string, entities: Array<{name: string; description: string; category: string}>): string[] {
-    const suggestions = [];
-    const mainEntity = entities[0];
-    
-    if (mainEntity.category === 'person') {
-        suggestions.push(`What is ${mainEntity.name} doing now?`);
-        suggestions.push(`Tell me about ${mainEntity.name}'s achievements`);
-        if (entities.length > 1) {
-            suggestions.push(`How does ${mainEntity.name} relate to ${entities[1].name}?`);
-        }
-    } else if (mainEntity.category === 'organization') {
-        suggestions.push(`What are ${mainEntity.name}'s latest developments?`);
-        suggestions.push(`Tell me about ${mainEntity.name}'s history`);
-    } else {
-        suggestions.push(`Tell me more about ${mainEntity.name}`);
-        suggestions.push(`What are the latest updates on ${mainEntity.name}?`);
-    }
-    
-    return suggestions.slice(0, 3);
-} 
+// Removed unused helper functions: generateSummaryFromEntities, generateResponseFromCache, generateFollowUpFromCache
+// These are now handled by the fast web search service and optimized supermemory service 

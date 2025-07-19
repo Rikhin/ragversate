@@ -12,9 +12,15 @@
     "test:supermemory": "npx tsx scripts/test-supermemory.js",
     "setup:helixdb": "./scripts/setup-helixdb.sh",
     "setup:supermemory": "./scripts/setup-supermemory.sh",
-    "show:cache": "npx tsx scripts/show-cache.js"
+    "show:cache": "npx tsx scripts/show-cache.js",
+    "import:researchers": "npx tsx scripts/import-researcher-csvs.ts",
+    "optimize:startup": "npx tsx scripts/startup-optimization.ts",
+    "metrics": "curl http://localhost:3000/api/metrics",
+    "test": "jest",
+    "test:watch": "jest --watch"
   },
   "dependencies": {
+    "csv-parser": "^3.2.0",
     "dotenv": "^17.2.0",
     "exa-js": "^1.8.22",
     "helix-ts": "^1.0.5",
@@ -22,17 +28,21 @@
     "openai": "^5.10.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "supermemory": "^3.0.0-alpha.21"
+    "supermemory": "^3.0.0-alpha.21",
+    "swr": "^2.3.4"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "15.4.1",
+    "jest": "^30.0.4",
     "tailwindcss": "^4",
+    "ts-jest": "^29.4.0",
     "typescript": "^5"
   }
 }

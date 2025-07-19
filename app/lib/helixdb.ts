@@ -56,7 +56,9 @@ class HelixDBService {
   private relationshipCache: Map<string, Array<{ from: string; to: string; type: string; strength: number }>> = new Map();
   private connectionPromise: Promise<void> | null = null;
   private requestCache: Map<string, { data: HelixDBEntity[]; timestamp: number }> = new Map();
-  private readonly CACHE_TTL = 5000; // 5 seconds
+  private readonly CACHE_TTL = 300000; // 5 minutes
+  private nameIndex: Map<string, Entity[]> = new Map();
+  private lastCacheTime: number | null = null;
 
   constructor() {
     // Initialize with local HelixDB instance
@@ -102,19 +104,13 @@ class HelixDBService {
     try {
       console.log('🔥 Warming HelixDB cache...');
       const entities = await this.getAllEntitiesCached();
-      
-      // Cache entities by ID for fast lookups
+      this.nameIndex.clear();
       for (const entity of entities) {
-        this.entityCache.set(entity.id, {
-          id: entity.id,
-          name: entity.name,
-          category: entity.category,
-          source_query: entity.source_query,
-          description: entity.description,
-          created_at: entity.created_at
-        });
+        this.entityCache.set(entity.id, entity);
+        const nameKey = entity.name.toLowerCase();
+        if (!this.nameIndex.has(nameKey)) this.nameIndex.set(nameKey, []);
+        this.nameIndex.get(nameKey)!.push(entity);
       }
-      
       console.log(`✅ Cache warmed with ${entities.length} entities`);
     } catch (error) {
       console.warn('⚠️ Failed to warm cache:', error);
@@ -286,12 +282,32 @@ class HelixDBService {
     if (!this.isConnected) {
       await this.connect();
     }
+    const now = Date.now();
+    if (!this.lastCacheTime || now - this.lastCacheTime > this.CACHE_TTL) {
+      await this.warmCache();
+      this.lastCacheTime = now;
+    }
 
     try {
-      const entities = await this.getAllEntitiesCached();
+      const queryLower = query.toLowerCase().trim();
+      let matches: Entity[] = [];
+      // Fast exact name match
+      if (this.nameIndex.has(queryLower)) {
+        matches = this.nameIndex.get(queryLower)!;
+      } else {
+        // Partial match
+        for (const [name, entities] of this.nameIndex.entries()) {
+          if (name.includes(queryLower) || queryLower.includes(name)) {
+            matches.push(...entities);
+          }
+        }
+      }
+      if (matches.length >= limit) {
+        return { entities: matches.slice(0, limit), total: matches.length };
+      }
       
       // Preprocess query once
-      const { queryLower, queryWords, patterns } = this.preprocessQuery(query);
+      const { queryLower: queryLowerFinal, queryWords, patterns } = this.preprocessQuery(query);
       
       // Multi-stage search for maximum efficiency:
       // 1. Fast text matching with early exit
@@ -299,12 +315,12 @@ class HelixDBService {
       // 3. Semantic similarity scoring (only if needed)
       
       // Stage 1: Fast text matching with early exit
-      const textMatches = entities.filter((entity: HelixDBEntity) => {
+      const textMatches = matches.filter((entity: Entity) => {
         const nameLower = entity.name.toLowerCase();
         const descriptionLower = entity.description.toLowerCase();
         
         // Exact name match (highest priority) - immediate return
-        if (nameLower === queryLower) return true;
+        if (nameLower === queryLowerFinal) return true;
         
         // Pattern-based matching (if we have a pattern match)
         if (patterns && patterns[1]) {
@@ -313,7 +329,7 @@ class HelixDBService {
         }
         
         // Name contains query or query contains name
-        if (nameLower.includes(queryLower) || queryLower.includes(nameLower)) return true;
+        if (nameLower.includes(queryLowerFinal) || queryLowerFinal.includes(nameLower)) return true;
         
         // Description contains query words
         return queryWords.some(word => descriptionLower.includes(word));
@@ -331,9 +347,9 @@ class HelixDBService {
       // Early exit for high-confidence single matches
       const highConfidenceMatches = textMatches.filter(entity => {
         const nameLower = entity.name.toLowerCase();
-        return nameLower === queryLower || 
-               nameLower.includes(queryLower) || 
-               queryLower.includes(nameLower);
+        return nameLower === queryLowerFinal || 
+               nameLower.includes(queryLowerFinal) || 
+               queryLowerFinal.includes(nameLower);
       });
       
       if (highConfidenceMatches.length >= 1) {
@@ -367,7 +383,7 @@ class HelixDBService {
       // Only do expensive scoring if we need to rank results
       const scoredResults = uniqueResults.map(entity => ({
         entity,
-        score: this.calculateSemanticScore(entity, queryLower, queryWords)
+        score: this.calculateSemanticScore(entity, queryLowerFinal, queryWords)
       }));
       
       scoredResults.sort((a, b) => b.score - a.score);
@@ -528,6 +544,9 @@ class HelixDBService {
 
       // Cache the new entity
       this.entityCache.set(entity.id, newEntity);
+      const nameKey = newEntity.name.toLowerCase();
+      if (!this.nameIndex.has(nameKey)) this.nameIndex.set(nameKey, []);
+      this.nameIndex.get(nameKey)!.push(newEntity);
 
       return newEntity;
     } catch (error) {
@@ -899,6 +918,63 @@ class HelixDBService {
   // Clear request cache (call this at the end of each request)
   clearRequestCache(): void {
     this.requestCache.clear();
+  }
+
+  // Add fuzzy matching for deduplication
+  private calculateSimilarity(str1: string, str2: string): number {
+    const longer = str1.length > str2.length ? str1 : str2;
+    const shorter = str1.length > str2.length ? str2 : str1;
+    if (longer.length === 0) return 1.0;
+    return (longer.length - this.editDistance(longer, shorter)) / longer.length;
+  }
+
+  private editDistance(s1: string, s2: string): number {
+    s1 = s1.toLowerCase();
+    s2 = s2.toLowerCase();
+    const costs = [];
+    for (let i = 0; i <= s1.length; i++) {
+      let lastValue = i;
+      for (let j = 0; j <= s2.length; j++) {
+        if (i === 0) {
+          costs[j] = j;
+        } else if (j > 0) {
+          let newValue = costs[j - 1];
+          if (s1.charAt(i - 1) !== s2.charAt(j - 1)) {
+            newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
+          }
+          costs[j - 1] = lastValue;
+          lastValue = newValue;
+        }
+      }
+      if (i > 0) costs[s2.length] = lastValue;
+    }
+    return costs[s2.length];
+  }
+
+  // Incremental index update
+  async updateIndex(newEntity: Entity): Promise<void> {
+    this.entityCache.set(newEntity.id, newEntity);
+    const nameKey = newEntity.name.toLowerCase();
+    if (!this.nameIndex.has(nameKey)) this.nameIndex.set(nameKey, []);
+    this.nameIndex.get(nameKey)!.push(newEntity);
+  }
+
+  // Deduplication with fuzzy matching
+  async createEntityWithDeduplication(entityData: Omit<Entity, 'id' | 'created_at'>): Promise<Entity> {
+    const existingEntities = Array.from(this.entityCache.values());
+    const similarityThreshold = 0.8;
+    
+    // Check for duplicates using fuzzy matching
+    for (const existing of existingEntities) {
+      const nameSimilarity = this.calculateSimilarity(entityData.name, existing.name);
+      if (nameSimilarity > similarityThreshold) {
+        console.log(`🔄 Skipping duplicate entity: ${entityData.name} (similar to ${existing.name})`);
+        return existing;
+      }
+    }
+    
+    // Create new entity if no duplicates found
+    return await this.createEntity(entityData);
   }
 }
 
