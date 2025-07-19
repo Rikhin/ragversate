@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { agentSearch } from '@/app/lib/agent-search';
 
 // Simple caching for API responses (temporarily disabled)
 
@@ -39,19 +40,52 @@ export async function POST(request: NextRequest) {
       userId
     });
 
-    // Simple response for testing
+    // Execute agent search
+    console.log(`\n🚀 [AGENT] Starting search for: "${query}"`);
+    console.log(`📊 [AGENT] User ID: ${userId}`);
+    console.log('='.repeat(50));
+
+    let searchResult;
+    try {
+      searchResult = await agentSearch(query, userId);
+    } catch (searchError) {
+      console.error('Agent search failed:', searchError);
+      return NextResponse.json({
+        error: 'Search service temporarily unavailable',
+        details: process.env.NODE_ENV === 'development' ? (searchError as Error).message : 'Please try again later',
+        requestId
+      }, { status: 503 });
+    }
+
+    // Log tool usage summary
+    console.log('\n📊 [AGENT] Tool Usage Summary:');
+    searchResult.toolUsage.forEach((usage, index) => {
+      const status = usage.success ? '✅' : '❌';
+      console.log(`${index + 1}. ${status} ${usage.tool}.${usage.action} (${usage.duration}ms)`);
+    });
+
+    console.log(`\n🎯 [AGENT] Final Result:`);
+    console.log(`   Source: ${searchResult.source}`);
+    console.log(`   Cached: ${searchResult.cached}`);
+    console.log(`   Total Time: ${searchResult.performance.totalTime}ms`);
+    console.log(`   Reasoning: ${searchResult.reasoning}`);
+    console.log('='.repeat(50));
+
+    // Generate follow-up questions
+    const followUpQuestions = [
+      "What specific aspect would you like to know more about?",
+      "Would you like me to search for related information?",
+      "Is there anything else you'd like to explore on this topic?"
+    ];
+
     const response = {
-      answer: `This is a test response for: "${query}". The API is working but full functionality is being restored.`,
-      source: 'test' as const,
-      cached: false,
-      performance: { helixdbTime: 0, exaTime: 0, totalTime: Date.now() - startTime },
-      reasoning: 'Test mode - full search functionality temporarily disabled',
-      toolUsage: [],
-      followUpQuestions: [
-        "What specific aspect would you like to know more about?",
-        "Would you like me to search for related information?",
-        "Is there anything else you'd like to explore on this topic?"
-      ],
+      answer: searchResult.answer,
+      source: searchResult.source,
+      cached: searchResult.cached,
+      performance: searchResult.performance,
+      reasoning: searchResult.reasoning,
+      toolUsage: searchResult.toolUsage,
+      followUpQuestions,
       requestId
     };
 
