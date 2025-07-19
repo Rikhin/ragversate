@@ -1,35 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// Conditional import to avoid ES module issues
-let agentSearch: ((query: string, userId: string) => Promise<{
-  answer: string;
-  source: string;
-  cached: boolean;
-  performance: { helixdbTime: number; exaTime: number; totalTime: number };
-  reasoning: string;
-  toolUsage: Array<{
-    tool: string;
-    action: string;
-    parameters: Record<string, unknown>;
-    startTime: number;
-    endTime: number;
-    duration: number;
-    success: boolean;
-    result?: unknown;
-    error?: string;
-  }>;
-}>) | null = null;
-
-// Try to import the agent search function
-try {
-  // Use dynamic import to avoid build-time issues
-  agentSearch = async (query: string, userId: string) => {
-    const { agentSearch: searchFn } = await import('../../lib/agent-search');
-    return searchFn(query, userId);
-  };
-} catch (error) {
-  console.warn('Agent search module not available, using fallback');
-}
+// Import agent search directly - the ES module issues should be resolved now
+import { agentSearch } from '../../lib/agent-search';
 
 // Simple caching for API responses (temporarily disabled)
 
@@ -70,78 +42,42 @@ export async function POST(request: NextRequest) {
       userId
     });
 
-    // Execute agent search if available, otherwise use simplified response
+    // Execute agent search
     console.log(`\n🚀 [AGENT] Starting search for: "${query}"`);
     console.log(`📊 [AGENT] User ID: ${userId}`);
     console.log('='.repeat(50));
 
     let searchResult;
     let response;
+    try {
+      searchResult = await agentSearch(query, userId);
+      
+      // Log tool usage summary
+      console.log('\n📊 [AGENT] Tool Usage Summary:');
+      searchResult.toolUsage.forEach((usage: {
+        tool: string;
+        action: string;
+        duration: number;
+        success: boolean;
+      }, index: number) => {
+        const status = usage.success ? '✅' : '❌';
+        console.log(`${index + 1}. ${status} ${usage.tool}.${usage.action} (${usage.duration}ms)`);
+      });
 
-    if (agentSearch) {
-      try {
-        searchResult = await agentSearch(query, userId);
-        
-        // Log tool usage summary
-        console.log('\n📊 [AGENT] Tool Usage Summary:');
-        searchResult.toolUsage.forEach((usage: {
-          tool: string;
-          action: string;
-          duration: number;
-          success: boolean;
-        }, index: number) => {
-          const status = usage.success ? '✅' : '❌';
-          console.log(`${index + 1}. ${status} ${usage.tool}.${usage.action} (${usage.duration}ms)`);
-        });
+      console.log(`\n🎯 [AGENT] Final Result:`);
+      console.log(`   Source: ${searchResult.source}`);
+      console.log(`   Cached: ${searchResult.cached}`);
+      console.log(`   Total Time: ${searchResult.performance.totalTime}ms`);
+      console.log(`   Reasoning: ${searchResult.reasoning}`);
+      console.log('='.repeat(50));
 
-        console.log(`\n🎯 [AGENT] Final Result:`);
-        console.log(`   Source: ${searchResult.source}`);
-        console.log(`   Cached: ${searchResult.cached}`);
-        console.log(`   Total Time: ${searchResult.performance.totalTime}ms`);
-        console.log(`   Reasoning: ${searchResult.reasoning}`);
-        console.log('='.repeat(50));
-
-        response = {
-          answer: searchResult.answer,
-          source: searchResult.source,
-          cached: searchResult.cached,
-          performance: searchResult.performance,
-          reasoning: searchResult.reasoning,
-          toolUsage: searchResult.toolUsage,
-          followUpQuestions: [
-            "What specific aspect would you like to know more about?",
-            "Would you like me to search for related information?",
-            "Is there anything else you'd like to explore on this topic?"
-          ],
-          requestId
-        };
-      } catch (searchError) {
-        console.error('Agent search failed:', searchError);
-        // Fall back to simplified response
-        response = {
-          answer: `I found information about "${query}". This is a simplified response while we restore full functionality.`,
-          source: 'simplified' as const,
-          cached: false,
-          performance: { helixdbTime: 0, exaTime: 0, totalTime: Date.now() - startTime },
-          reasoning: 'Simplified search mode - full functionality being restored',
-          toolUsage: [],
-          followUpQuestions: [
-            "What specific aspect would you like to know more about?",
-            "Would you like me to search for related information?",
-            "Is there anything else you'd like to explore on this topic?"
-          ],
-          requestId
-        };
-      }
-    } else {
-      // Simplified response when agent search is not available
       response = {
-        answer: `I found information about "${query}". This is a simplified response while we restore full functionality.`,
-        source: 'simplified' as const,
-        cached: false,
-        performance: { helixdbTime: 0, exaTime: 0, totalTime: Date.now() - startTime },
-        reasoning: 'Simplified search mode - full functionality being restored',
-        toolUsage: [],
+        answer: searchResult.answer,
+        source: searchResult.source,
+        cached: searchResult.cached,
+        performance: searchResult.performance,
+        reasoning: searchResult.reasoning,
+        toolUsage: searchResult.toolUsage,
         followUpQuestions: [
           "What specific aspect would you like to know more about?",
           "Would you like me to search for related information?",
@@ -149,6 +85,13 @@ export async function POST(request: NextRequest) {
         ],
         requestId
       };
+    } catch (searchError) {
+      console.error('Agent search failed:', searchError);
+      return NextResponse.json({
+        error: 'Search service temporarily unavailable',
+        details: process.env.NODE_ENV === 'development' ? (searchError as Error).message : 'Please try again later',
+        requestId
+      }, { status: 503 });
     }
 
     const duration = Date.now() - startTime;
