@@ -139,15 +139,14 @@ export default function SearchResults({ result, isLoading }: SearchResultsProps)
                   </pre>
                 </div>
 
-                                {usage.success && usage.result && (
+                                {usage.success && usage.result ? (
                   <div className="text-sm text-gray-600 mb-2">
                     <strong>Result:</strong>
                     <pre className="mt-1 p-2 bg-green-50 rounded text-xs overflow-x-auto">
-                      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                      {usage.result ? JSON.stringify(usage.result as any, null, 2) : 'No result'}
+                      {JSON.stringify(usage.result, null, 2)}
                     </pre>
                   </div>
-                )}
+                ) : null}
 
                 {!usage.success && usage.error && (
                   <div className="text-sm text-red-600">

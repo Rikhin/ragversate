@@ -194,14 +194,14 @@ class FastWebSearchService {
   private async cacheEntities(results: unknown[], query: string) {
     try {
       // Extract basic entities from search results without full content extraction
-      const entities = (results as any[])
+      const entities = (results as Array<{ title?: string; text?: string; url?: string }>)
         .filter(r => r.title && r.text)
         .map(r => ({
-          name: r.title,
+          name: r.title!,
           description: (r.text as string).substring(0, 200),
-          category: this.categorizeEntity(r.title, r.text),
+          category: this.categorizeEntity(r.title!, r.text!),
           source: 'web',
-          url: (r as any).url
+          url: r.url
         }))
         .slice(0, 3); // Limit to top 3 for speed
 
@@ -215,11 +215,11 @@ class FastWebSearchService {
     }
   }
 
-  private async storeEntitiesInBackground(entities: unknown[], query: string) {
+  private async storeEntitiesInBackground(entities: Array<{ name: string; category: string; description: string }>, query: string) {
     // Store entities in background without blocking the response
     setImmediate(async () => {
       try {
-        for (const entity of entities as any[]) {
+        for (const entity of entities) {
           await helixDB.createEntity({
             name: entity.name,
             category: entity.category,
@@ -237,7 +237,7 @@ class FastWebSearchService {
   private async generateFollowUpQuestions(query: string, results: unknown[]): Promise<string[]> {
     try {
       // Generate follow-up questions based on search results
-      const titles = (results as any[]).map(r => r.title).join(', ');
+      const titles = (results as Array<{ title?: string }>).map(r => r.title || '').join(', ');
       
       const response = await this.openai.chat.completions.create({
         model: 'gpt-3.5-turbo-0125',
@@ -270,8 +270,8 @@ class FastWebSearchService {
       }
 
       // Use a faster approach for summary generation - limit content
-      const textContent = (contents as any[])
-        .map(c => (c.text as string)?.substring(0, 300)) // Reduced from 500
+      const textContent = (contents as Array<{ text?: string }>)
+        .map(c => c.text?.substring(0, 300) || '') // Reduced from 500
         .filter(Boolean)
         .join('\n\n')
         .substring(0, 1000); // Reduced from 2000
@@ -299,20 +299,21 @@ class FastWebSearchService {
     }
   }
 
-  private extractEntitiesFromResults(results: unknown[], entityResults: unknown): unknown[] {
-    if (entityResults.status === 'fulfilled' && (entityResults as any).value.length > 0) {
-      return (entityResults as any).value;
+  private extractEntitiesFromResults(results: unknown[], entityResults: unknown): Array<{ name: string; description: string; category: string; source: string; url?: string }> {
+    if ((entityResults as { status: string; value?: Array<{ name: string; description: string; category: string; source: string; url?: string }> }).status === 'fulfilled' && 
+        (entityResults as { status: string; value?: Array<{ name: string; description: string; category: string; source: string; url?: string }> }).value?.length) {
+      return (entityResults as { status: string; value: Array<{ name: string; description: string; category: string; source: string; url?: string }> }).value;
     }
 
     // Fallback: extract basic entities from search results
-    return (results as any[])
+    return (results as Array<{ title?: string; text?: string; url?: string }>)
       .slice(0, 3)
       .map(r => ({
-        name: (r as any).title,
-        description: (r as any).text?.substring(0, 150) || 'No description available',
+        name: r.title || 'Unknown',
+        description: r.text?.substring(0, 150) || 'No description available',
         category: 'other',
         source: 'web',
-        url: (r as any).url
+        url: r.url
       }));
   }
 
@@ -336,8 +337,8 @@ class FastWebSearchService {
   }
 
   private calculateConfidence(results: unknown[]): 'high' | 'medium' | 'low' {
-    if ((results as any[]).length >= 5) return 'high';
-    if ((results as any[]).length >= 3) return 'medium';
+    if ((results as Array<unknown>).length >= 5) return 'high';
+    if ((results as Array<unknown>).length >= 3) return 'medium';
     return 'low';
   }
 
