@@ -1,7 +1,6 @@
 import { helixDB } from './helixdb';
 import { fastWebSearch, FastSearchResult } from './fast-web-search';
 import { optimizedSupermemoryService } from './supermemory-optimized';
-import { contextEngine } from './context-engine';
 import { logger } from './logging';
 import OpenAI from 'openai';
 
@@ -149,57 +148,7 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
   let exaTime = 0;
   let reasoning = '';
 
-  // 0. Context Engine Analysis (Cursor-style reactive understanding) - OPTIONAL
-  const contextStart = Date.now();
-  console.log('🧠 [TOOL] Starting Context Engine analysis...');
-  
-  try {
-    const reactiveResponse = await contextEngine.generateReactiveResponse(query, userId);
-    const contextTime = Date.now() - contextStart;
-    
-    if (reactiveResponse) {
-      logToolUsage('ContextEngine', 'generateReactiveResponse', { query, userId }, contextStart, true, {
-        immediateAnswer: !!reactiveResponse.immediateAnswer,
-        suggestionsCount: reactiveResponse.contextAwareSuggestions.length,
-        confidence: reactiveResponse.confidence
-      });
-
-      // If we have an immediate answer from context, return it
-      if (reactiveResponse.immediateAnswer && reactiveResponse.confidence > 0.7) {
-        reasoning = `Answered from context: ${reactiveResponse.reasoning}`;
-        logger.log('info', '✅ Context Engine provided immediate answer', { 
-          query, 
-          confidence: reactiveResponse.confidence,
-          contextTime 
-        });
-        
-        return {
-          answer: reactiveResponse.immediateAnswer,
-          source: 'helixdb' as const, // Context comes from our knowledge base
-          cached: true,
-          performance: { helixdbTime: 0, exaTime: 0, totalTime: Date.now() - startTime },
-          reasoning,
-          toolUsage
-        };
-      }
-
-      logger.log('info', '🧠 Context Engine analysis completed', { 
-        query, 
-        confidence: reactiveResponse.confidence,
-        contextTime 
-      });
-    } else {
-      logToolUsage('ContextEngine', 'generateReactiveResponse', { query, userId }, contextStart, true, {
-        disabled: true,
-        message: 'Context Engine is disabled or returned null'
-      });
-      logger.log('info', '🧠 Context Engine disabled or unavailable', { query });
-    }
-  } catch (error) {
-    const contextTime = Date.now() - contextStart;
-    logToolUsage('ContextEngine', 'generateReactiveResponse', { query, userId }, contextStart, false, undefined, (error as Error).message);
-    logger.log('warn', 'Context Engine analysis failed', { error: (error as Error).message });
-  }
+  // Start with HelixDB search directly
 
   // 1. Try HelixDB (fuzzy match) - also check for similar patterns
   const helixStart = Date.now();
@@ -389,16 +338,7 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
       toolUsage
     };
 
-    // Update context with search results for future reactive responses (OPTIONAL)
-    try {
-      await contextEngine.updateContextWithResults(userId, query, {
-        answer: summary,
-        entities: exaResult.entities
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.log('warn', 'Failed to update context with results', { error: errorMessage });
-    }
+    // Context Engine removed - no longer updating context
 
     return finalResult;
   } catch (error) {
