@@ -26,11 +26,28 @@ function cacheResponse(query: string, userId: string | undefined, data: unknown)
   responseCache.set(key, { data, timestamp: Date.now() });
 }
 
+export async function GET(request: NextRequest) {
+  return NextResponse.json({ error: 'GET method not supported. Use POST.' }, { status: 405 });
+}
+
 export async function POST(request: NextRequest) {
   const requestId = Math.random().toString(36).substring(2, 10);
   const startTime = Date.now();
 
   try {
+    // Check if required environment variables are available
+    const requiredEnvVars = ['OPENAI_API_KEY', 'EXA_API_KEY'];
+    const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
+    
+    if (missingEnvVars.length > 0) {
+      console.error('Missing environment variables:', missingEnvVars);
+      return NextResponse.json({ 
+        error: 'Server configuration error - missing environment variables',
+        missingVars: missingEnvVars,
+        requestId 
+      }, { status: 500 });
+    }
+
     const { query, userId: providedUserId } = await request.json();
 
     if (!query) {
@@ -90,7 +107,17 @@ export async function POST(request: NextRequest) {
     console.log(`📚 [AGENT] User Knowledge: ${userKnowledgeAvailable ? 'Available' : 'None'}`);
     console.log('='.repeat(50));
 
-    const searchResult = await agentSearch(query, userId);
+    let searchResult;
+    try {
+      searchResult = await agentSearch(query, userId);
+    } catch (searchError) {
+      console.error('Agent search failed:', searchError);
+      return NextResponse.json({
+        error: 'Search service temporarily unavailable',
+        details: process.env.NODE_ENV === 'development' ? (searchError as Error).message : 'Please try again later',
+        requestId
+      }, { status: 503 });
+    }
 
     // Log tool usage summary
     console.log('\n📊 [AGENT] Tool Usage Summary:');

@@ -3,15 +3,20 @@ import { helixDB } from '@/app/lib/helixdb';
 
 export async function GET(req: NextRequest) {
   try {
-    // Check HelixDB connection and cache status
-    const helixStatus = await helixDB.healthCheck();
-    
-    // Check if cache is warmed by checking if we have entities in cache
-    const cacheWarmed = helixDB.isCacheWarmed();
-    
-    // Check environment variables
+    // Check environment variables first
     const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
     const hasExaKey = !!process.env.EXA_API_KEY;
+    const hasSupermemoryKey = !!process.env.SUPERMEMORY_API_KEY;
+    
+    // Check HelixDB connection and cache status (with error handling)
+    let helixStatus = false;
+    let cacheWarmed = false;
+    try {
+      helixStatus = await helixDB.healthCheck();
+      cacheWarmed = helixDB.isCacheWarmed();
+    } catch (error) {
+      console.warn('HelixDB health check failed:', error);
+    }
     
     const status = {
       status: 'ok',
@@ -22,12 +27,17 @@ export async function GET(req: NextRequest) {
           cacheWarmed: cacheWarmed
         },
         openai: hasOpenAIKey ? 'configured' : 'missing_key',
-        exa: hasExaKey ? 'configured' : 'missing_key'
+        exa: hasExaKey ? 'configured' : 'missing_key',
+        supermemory: hasSupermemoryKey ? 'configured' : 'missing_key'
       },
-      environment: process.env.NODE_ENV || 'development'
+      environment: process.env.NODE_ENV || 'development',
+      deployment: {
+        platform: process.env.VERCEL ? 'vercel' : 'other',
+        region: process.env.VERCEL_REGION || 'unknown'
+      }
     };
 
-    const isHealthy = helixStatus && hasOpenAIKey && hasExaKey;
+    const isHealthy = hasOpenAIKey && hasExaKey; // Don't require HelixDB for basic health
     
     return NextResponse.json(status, { 
       status: isHealthy ? 200 : 503 
