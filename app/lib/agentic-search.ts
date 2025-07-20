@@ -854,7 +854,12 @@ If no tool is suitable, return null.`;
         const exaSearchStart = Date.now();
         // Real Exa web search
         const webResult = await fastWebSearch.search(query);
-        toolAnswer = webResult.summary;
+        // Summarize web results with LLM
+        let summary = webResult.summary;
+        if (webResult.summary && webResult.summary.length > 0) {
+          summary = await this.llmSummarize(query, webResult.summary);
+        }
+        toolAnswer = summary;
         toolSource = 'exa';
         toolEvaluation = {
           quality: webResult.confidence === 'high' ? 'excellent' : webResult.confidence === 'medium' ? 'good' : 'poor',
@@ -864,6 +869,17 @@ If no tool is suitable, return null.`;
           shouldRetry: webResult.total === 0,
           reasoning: webResult.total === 0 ? 'No web results found.' : 'Web search provided a relevant result.'
         };
+        // Cache the summary in HelixDB
+        try {
+          await multiHelixDB.createEntity(mode, {
+            name: query,
+            category: 'web_summary',
+            source_query: query,
+            description: summary
+          });
+        } catch (err) {
+          // Ignore cache errors for now
+        }
         const exaSearchEnd = Date.now();
         toolUsage.push({
           tool: 'exa_search',
@@ -873,7 +889,7 @@ If no tool is suitable, return null.`;
           endTime: exaSearchEnd,
           duration: exaSearchEnd - exaSearchStart,
           success: webResult.total > 0,
-          result: { webResult }
+          result: { webResult, summary }
         });
         break;
       default:
