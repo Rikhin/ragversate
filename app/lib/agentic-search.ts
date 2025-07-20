@@ -696,7 +696,8 @@ Decision Criteria:
 4. If the initial analysis is less confident, use a tool that can provide context or additional information.
 5. If the initial analysis is uncertain, use a tool that can help refine the query or explore related topics.
 
-Please provide the next tool to execute and its reason.
+Return ONLY a valid JSON object with the following fields and NO extra text or explanation:
+{"tool": <string>, "reason": <string>, "confidence": <number>}.
 If no tool is suitable, return null.`;
     const response = await this.openai.chat.completions.create({
       model: this.selectModel(query),
@@ -704,12 +705,31 @@ If no tool is suitable, return null.`;
       temperature: 0.7,
       max_tokens: 200,
     });
-    const decision = JSON.parse(response.choices[0].message.content || '{}');
-    if (decision.tool) {
+    const content = response.choices[0].message.content || '{}';
+    let decision: Record<string, unknown> | null = null;
+    try {
+      decision = JSON.parse(content);
+    } catch (err) {
+      // Fallback: try to extract tool and reason from text
+      const toolMatch = content.match(/tool\s*[:=]\s*([\w-]+)/i);
+      const reasonMatch = content.match(/reason\s*[:=]\s*([^\n]+)/i);
+      const confidenceMatch = content.match(/confidence\s*[:=]\s*([0-9.]+)/i);
+      if (toolMatch) {
+        decision = {
+          tool: String(toolMatch[1].trim()),
+          reason: reasonMatch ? String(reasonMatch[1].trim()) : 'No specific reason provided.',
+          confidence: confidenceMatch ? Number(confidenceMatch[1]) : 0.5
+        } as Record<string, unknown>;
+        console.warn('[AgenticSearch] Fallback parser used for makeFinalDecision:', content);
+      } else {
+        decision = null;
+      }
+    }
+    if (decision && typeof decision.tool === 'string') {
       return {
-        tool: decision.tool,
-        reason: decision.reason || 'No specific reason provided.',
-        confidence: decision.confidence || 0.5,
+        tool: decision.tool as string,
+        reason: (decision.reason as string) || 'No specific reason provided.',
+        confidence: (decision.confidence as number) || 0.5,
         executed: false,
       };
     }
