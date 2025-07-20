@@ -481,6 +481,28 @@ class AgenticSearchSystem {
           
           console.log(`✅ [AGENTIC] Agent succeeded with final attempt (Quality: ${evaluation.quality})`);
           context.reasoningLog.push('Agent final attempt with tool (serves goal 1, 4).');
+        } else {
+          // Hardcoded fallback: if helixdb_search failed and exa_search was not tried, force exa_search
+          const helixTried = finalDecision.tool === 'helixdb_search';
+          const exaTried = agentDecisions.some(d => d.tool === 'exa_search');
+          if (helixTried && !exaTried) {
+            console.log('⚠️ [AGENTIC] HelixDB search failed, forcing Exa search as fallback.');
+            context.reasoningLog.push('HelixDB search failed, forcing Exa search as fallback.');
+            const exaDecision = {
+              tool: 'exa_search',
+              reason: 'Fallback after HelixDB returned no results',
+              confidence: 1,
+              executed: false
+            };
+            const exaResult = await this.executeToolWithEvaluation(exaDecision, query, userId, toolUsage, agentDecisions, mode);
+            if (exaResult && exaResult.success) {
+              finalAnswer = exaResult.answer ?? '';
+              finalSource = exaResult.source as AgenticSearchResult['source'];
+              finalReasoning = 'Fallback: Exa search used after HelixDB failed.';
+              finalEvaluation = exaResult.evaluation ?? finalEvaluation;
+              context.reasoningLog.push('Fallback Exa search succeeded.');
+            }
+          }
         }
       }
     }
@@ -695,6 +717,7 @@ Decision Criteria:
 3. If the initial analysis is very confident, use a tool that can provide a direct answer.
 4. If the initial analysis is less confident, use a tool that can provide context or additional information.
 5. If the initial analysis is uncertain, use a tool that can help refine the query or explore related topics.
+6. **If HelixDB returns no results, ALWAYS try Exa search next before giving up.**
 
 Return ONLY a valid JSON object with the following fields and NO extra text or explanation:
 {"tool": <string>, "reason": <string>, "confidence": <number>}.
