@@ -852,17 +852,17 @@ If no tool is suitable, return null.`;
         break;
       case 'exa_search':
         const exaSearchStart = Date.now();
-        // Simulate Exa web search (replace with real call)
-        const exaResult = `Web search result for "${query}".`;
-        toolAnswer = exaResult;
+        // Real Exa web search
+        const webResult = await fastWebSearch.search(query);
+        toolAnswer = webResult.summary;
         toolSource = 'exa';
         toolEvaluation = {
-          quality: 'good',
-          confidence: 0.8,
-          issues: [],
-          suggestions: [],
-          shouldRetry: false,
-          reasoning: 'Web search provided a relevant result.'
+          quality: webResult.confidence === 'high' ? 'excellent' : webResult.confidence === 'medium' ? 'good' : 'poor',
+          confidence: webResult.confidence === 'high' ? 0.95 : webResult.confidence === 'medium' ? 0.8 : 0.6,
+          issues: webResult.total === 0 ? ['No web results found'] : [],
+          suggestions: webResult.total === 0 ? ['Try rephrasing your question', 'Be more specific'] : [],
+          shouldRetry: webResult.total === 0,
+          reasoning: webResult.total === 0 ? 'No web results found.' : 'Web search provided a relevant result.'
         };
         const exaSearchEnd = Date.now();
         toolUsage.push({
@@ -872,8 +872,8 @@ If no tool is suitable, return null.`;
           startTime: exaSearchStart,
           endTime: exaSearchEnd,
           duration: exaSearchEnd - exaSearchStart,
-          success: true,
-          result: { webResult: exaResult }
+          success: webResult.total > 0,
+          result: { webResult }
         });
         break;
       default:
