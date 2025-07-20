@@ -1,0 +1,15 @@
+{
+  "vector_configs": {
+    "m": 16,
+    "ef_construction": 128,
+    "ef_search": 768
+  },
+  "graph_configs": {
+    "secondary_indices": []
+  },
+  "database_configs": {
+    "db_max_size_gb": 10,
+    "mcp": true,
+    "graphvis_node_label": "name"
+  }
+} 

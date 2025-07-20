@@ -24,6 +24,32 @@ export interface ConversationContext {
   messageCount: number;
 }
 
+// Define an interface for Result with id, text, content, score, metadata fields.
+interface Result {
+  id: string;
+  text?: string;
+  content?: string;
+  score?: number;
+  metadata?: { [key: string]: string | number | boolean };
+}
+
+// Define minimal interfaces for expected object shapes in buildContextFromMemories and calculateImportance.
+// Use type guards for safe property access.
+interface MemoryContent {
+  query?: string;
+  response?: string;
+  entities?: Array<{ name: string; category: string; description: string }>;
+  timestamp?: number;
+}
+
+interface MemoryMetadata {
+  type: 'conversation' | 'entity' | 'preference' | 'insight';
+  timestamp: number;
+  importance: number; // 0-1 scale
+  userId: string;
+  tags: string[];
+}
+
 class OptimizedSupermemoryService {
   private client!: Supermemory;
   private isInitialized: boolean = false;
@@ -35,11 +61,11 @@ class OptimizedSupermemoryService {
   private readonly RATE_LIMIT_WINDOW = 60000; // 1 minute
   
   // Local caching for cost efficiency
-  private userContextCache: Map<string, { data: any; timestamp: number }> = new Map();
+  private userContextCache: Map<string, { data: ConversationContext; timestamp: number }> = new Map();
   private readonly CACHE_TTL = 300000; // 5 minutes
   
   // Batch processing for efficiency
-  private memoryBatch: Array<{ content: string; metadata: any; tags: string[] }> = [];
+  private memoryBatch: Array<{ content: string; metadata: unknown; tags: string[] }> = [];
   private readonly BATCH_SIZE = 5;
   private batchTimer: NodeJS.Timeout | null = null;
 
@@ -227,7 +253,7 @@ class OptimizedSupermemoryService {
   }
 
   // Search user knowledge efficiently
-  async searchUserKnowledge(userId: string, query: string, limit: number = 3): Promise<any[]> {
+  async searchUserKnowledge(userId: string, query: string, limit: number = 3): Promise<OptimizedMemory[]> {
     // Ensure client is initialized
     await this.initialize();
     
@@ -243,9 +269,10 @@ class OptimizedSupermemoryService {
       });
       
       return searchResult.results.map(result => ({
-        content: (result as any).text || (result as any).content || JSON.stringify(result),
-        score: (result as any).score || 0,
-        metadata: (result as any).metadata || {}
+        id: result.id,
+        userId: userId,
+        content: (result as Result).text || (result as Result).content || JSON.stringify(result),
+        metadata: (result as Result).metadata || {}
       }));
     } catch (error) {
       console.error('Failed to search user knowledge:', error);
@@ -369,7 +396,7 @@ class OptimizedSupermemoryService {
     
     for (const memory of memories) {
       try {
-        const data = JSON.parse(memory.content);
+        const data = JSON.parse(memory.content) as MemoryContent;
         
         if (data.query) {
           const queryTopics = this.extractTopics(data.query);
@@ -431,7 +458,7 @@ class OptimizedSupermemoryService {
     return 'moderate';
   }
 
-  private calculateImportance(query: string, response: string, entities: any[]): number {
+  private calculateImportance(query: string, response: string, entities: Array<{ name: string; category: string; description: string }>): number {
     let importance = 0.5; // Base importance
     
     // Increase importance for longer, more detailed responses

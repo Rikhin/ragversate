@@ -4,7 +4,7 @@ interface LogEntry {
   timestamp: number;
   level: 'info' | 'warn' | 'error';
   message: string;
-  data?: any;
+  data?: unknown;
   duration?: number;
 }
 
@@ -55,7 +55,7 @@ class Logger {
   }
 
   // Log error
-  logError(errorType: string, error: Error, context?: any) {
+  logError(errorType: string, error: Error, context?: unknown) {
     if (!this.metrics.errors[errorType]) {
       this.metrics.errors[errorType] = 0;
     }
@@ -65,7 +65,7 @@ class Logger {
   }
 
   // General logging
-  log(level: 'info' | 'warn' | 'error', message: string, data?: any) {
+  log(level: 'info' | 'warn' | 'error', message: string, data?: unknown) {
     const entry: LogEntry = {
       timestamp: Date.now(),
       level,
@@ -132,14 +132,14 @@ export const logCacheHit = (cacheType: string, hit: boolean) => {
   logger.logCacheHit(cacheType, hit);
 };
 
-export const logError = (errorType: string, error: Error, context?: any) => {
+export const logError = (errorType: string, error: Error, context?: unknown) => {
   logger.logError(errorType, error, context);
 };
 
-export const logInfo = (message: string, data?: any) => {
+export const logInfo = (message: string, data?: unknown) => {
   logger.log('info', message, data);
 };
 
-export const logWarn = (message: string, data?: any) => {
+export const logWarn = (message: string, data?: unknown) => {
   logger.log('warn', message, data);
 }; 

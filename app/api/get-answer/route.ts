@@ -1,143 +1,92 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { agentSearch } from '@/app/lib/agent-search';
+import { agenticSearchSystem } from '@/app/lib/agentic-search';
+import { semanticCache } from '@/app/lib/semantic-cache';
 import { logger } from '@/app/lib/logging';
-import { optimizedSupermemoryService } from '@/app/lib/supermemory-optimized';
-import { userSessionManager } from '@/app/lib/user-session';
-
-// Simple caching for API responses
-const responseCache = new Map<string, { data: unknown; timestamp: number }>();
-const CACHE_TTL = 300000; // 5 minutes
-
-function hashInput(input: unknown): string {
-  return JSON.stringify(input);
-}
-
-function getCachedResponse(query: string, userId?: string): unknown | null {
-  const key = hashInput({ query, userId });
-  const cached = responseCache.get(key);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.data;
-  }
-  return null;
-}
-
-function cacheResponse(query: string, userId: string | undefined, data: unknown): void {
-  const key = hashInput({ query, userId });
-  responseCache.set(key, { data, timestamp: Date.now() });
-}
 
 export async function POST(request: NextRequest) {
-  const requestId = Math.random().toString(36).substring(2, 10);
   const startTime = Date.now();
-
+  const requestId = Math.random().toString(36).substring(2, 10);
+  
   try {
-    const { query, userId: providedUserId } = await request.json();
+    const body = await request.json();
+    const { query, userId, stream = false } = body;
 
     if (!query) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 });
     }
 
-    // Use provided userId or generate one from session
-    const userId = providedUserId || userSessionManager.getUserIdFromRequest(request);
-
+    // Log the request
     logger.log('info', 'API Call: /api/get-answer', {
       requestId,
       query,
-      userId
+      userId,
+      stream
     });
 
-    // Check cache first
-    const cachedResponse = getCachedResponse(query, userId);
-    if (cachedResponse) {
-      logger.log('info', 'Cache Hit: api_response', { requestId });
-      return NextResponse.json(cachedResponse);
+    // Check semantic cache first (non-streaming)
+    if (!stream) {
+      const cachedResult = await semanticCache.getCachedResponse(query, userId);
+      if (cachedResult) {
+        logger.log('info', 'Semantic Cache Hit: api_response', {
+          requestId,
+          similarity: cachedResult.similarity,
+          originalQuery: cachedResult.query
+        });
+        
+        return NextResponse.json({
+          answer: cachedResult.answer,
+          source: cachedResult.source,
+          cached: true,
+          performance: cachedResult.performance,
+          reasoning: cachedResult.reasoning,
+          toolUsage: cachedResult.toolUsage,
+          agentDecisions: cachedResult.agentDecisions,
+          similarity: cachedResult.similarity,
+          originalQuery: cachedResult.query,
+          entities: typeof cachedResult === 'object' && cachedResult && 'entities' in cachedResult ? (cachedResult as { entities: unknown[] }).entities : [],
+          summary: typeof cachedResult === 'object' && cachedResult && 'summary' in cachedResult ? (cachedResult as { summary: string }).summary : ''
+        });
+      }
+
+      logger.log('info', 'Cache Miss: api_response', { requestId });
     }
 
-    logger.log('info', 'Cache Miss: api_response', { requestId });
+    // Perform agentic search
+    const result = await agenticSearchSystem.search(query, userId || 'anonymous');
 
-    // Get user context for personalization
-    let userContextAvailable = false;
-    try {
-      const context = await optimizedSupermemoryService.getUserContext(userId);
-      userContextAvailable = !!context;
-    } catch (error) {
-      logger.log('warn', 'Failed to get user context', { error: (error as Error).message });
+    // Cache the result (non-streaming)
+    if (!stream) {
+      await semanticCache.cacheResponse(query, userId, result);
     }
 
-    // Get personalized suggestions
-    let personalizedSuggestionsCount = 0;
-    try {
-      const suggestions = await optimizedSupermemoryService.getPersonalizedSuggestions(query, userId);
-      personalizedSuggestionsCount = suggestions.length;
-    } catch (error) {
-      logger.log('warn', 'Failed to get personalized suggestions', { error: (error as Error).message });
-    }
+    const totalTime = Date.now() - startTime;
 
-    // Search user knowledge
-    let userKnowledgeAvailable = false;
-    try {
-      const knowledge = await optimizedSupermemoryService.searchUserKnowledge(query, userId);
-      userKnowledgeAvailable = !!knowledge;
-    } catch (error) {
-      logger.log('warn', 'Failed to search user knowledge', { error: (error as Error).message });
-    }
-
-    // Execute agent search
-    console.log(`\n🚀 [AGENT] Starting search for: "${query}"`);
-    console.log(`📊 [AGENT] User ID: ${userId}`);
-    console.log(`🧠 [AGENT] User Context: ${userContextAvailable ? 'Available' : 'None'}`);
-    console.log(`💡 [AGENT] Personalized Suggestions: ${personalizedSuggestionsCount} found`);
-    console.log(`📚 [AGENT] User Knowledge: ${userKnowledgeAvailable ? 'Available' : 'None'}`);
-    console.log('='.repeat(50));
-
-    const searchResult = await agentSearch(query, userId);
-
-    // Log tool usage summary
-    console.log('\n📊 [AGENT] Tool Usage Summary:');
-    searchResult.toolUsage.forEach((usage, index) => {
-      const status = usage.success ? '✅' : '❌';
-      console.log(`${index + 1}. ${status} ${usage.tool}.${usage.action} (${usage.duration}ms)`);
-    });
-
-    console.log(`\n🎯 [AGENT] Final Result:`);
-    console.log(`   Source: ${searchResult.source}`);
-    console.log(`   Cached: ${searchResult.cached}`);
-    console.log(`   Total Time: ${searchResult.performance.totalTime}ms`);
-    console.log(`   Reasoning: ${searchResult.reasoning}`);
-    console.log('='.repeat(50));
-
-    // Generate follow-up questions
-    const followUpQuestions = [
-      "What specific aspect would you like to know more about?",
-      "Would you like me to search for related information?",
-      "Is there anything else you'd like to explore on this topic?"
-    ];
-
-    const response = {
-      answer: searchResult.answer,
-      source: searchResult.source,
-      cached: searchResult.cached,
-      performance: searchResult.performance,
-      reasoning: searchResult.reasoning,
-      toolUsage: searchResult.toolUsage,
-      followUpQuestions,
+    // Log the response
+    logger.log('info', 'API Call: /api/get-answer', {
+      duration: totalTime,
+      success: true,
       requestId
-    };
+    });
 
-    // Cache the response
-    cacheResponse(query, userId, response);
-
-    const duration = Date.now() - startTime;
-    logger.log('info', 'API Call: /api/get-answer', { duration, success: true, requestId });
-
-    return NextResponse.json(response);
+    return NextResponse.json({
+      ...result,
+      entities: typeof result === 'object' && result && 'entities' in result ? (result as { entities: unknown[] }).entities : [],
+      summary: typeof result === 'object' && result && 'summary' in result ? (result as { summary: string }).summary : '',
+      requestId
+    });
 
   } catch (error) {
-    const duration = Date.now() - startTime;
-    logger.log('error', 'API Call: /api/get-answer', { duration, success: false, requestId, error: (error as Error).message });
+    const totalTime = Date.now() - startTime;
     
+    logger.log('error', 'API Call: /api/get-answer', {
+      duration: totalTime,
+      success: false,
+      requestId,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+
     return NextResponse.json(
-      { error: 'Failed to process query', requestId },
+      { error: 'Internal server error', requestId },
       { status: 500 }
     );
   }

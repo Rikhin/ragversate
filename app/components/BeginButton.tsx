@@ -7,11 +7,15 @@ export default function BeginButton() {
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState('');
+  const [error, setError] = useState('');
+  const [warning, setWarning] = useState('');
   const router = useRouter();
 
   const handleBegin = async () => {
     setIsOptimizing(true);
     setProgress(0);
+    setError('');
+    setWarning('');
 
     try {
       // Step 1: Loading popular entities
@@ -29,7 +33,7 @@ export default function BeginButton() {
       setProgress(30);
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      // Step 4: Warming HelixDB cache
+      // Step 4: Warming HelixDB cache and initializing components
       setCurrentStep('Warming HelixDB cache...');
       setProgress(50);
       try {
@@ -39,17 +43,52 @@ export default function BeginButton() {
             'Content-Type': 'application/json',
           },
         });
-        
-        if (response.ok) {
-          const result = await response.json();
-          console.log('Optimization completed:', result);
+        const result = await response.json();
+        if (result.status === 'ok') {
+          // Check if any caches were skipped
+          const skipped = Object.entries(result.details || {}).filter(
+            ([mode, msg]) => typeof msg === 'string' && msg.startsWith('SKIPPED')
+          );
+          if (skipped.length > 0) {
+            setWarning(
+              `Some caches were skipped: ${skipped.map(([mode]) => mode).join(', ')}. You can still proceed.`
+            );
+          }
         } else {
-          console.log('Optimization failed, continuing...');
+          setError('Cache warming failed');
+          setIsOptimizing(false);
+          setProgress(0);
+          setCurrentStep('');
+          return;
         }
       } catch (error) {
-        console.log('Optimization failed, continuing...', error);
+        setError('Cache warming failed');
+        setIsOptimizing(false);
+        setProgress(0);
+        setCurrentStep('');
+        return;
       }
       await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Step 4.5: Initialize Context Engine and Supermemory
+      setCurrentStep('Initializing Context Engine...');
+      setProgress(65);
+      try {
+        // Trigger Context Engine initialization
+        await fetch('/api/get-answer', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            query: 'test initialization',
+            userId: 'startup_user'
+          })
+        });
+      } catch (error) {
+        console.log('Context Engine initialization failed, continuing...', error);
+      }
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       // Step 5: System health check
       setCurrentStep('System health check...');
@@ -65,7 +104,7 @@ export default function BeginButton() {
       console.log('🚀 Redirecting to search page...');
       router.push('/search');
     } catch (error) {
-      console.error('Optimization failed:', error);
+      setError('Cache warming failed');
       setIsOptimizing(false);
       setProgress(0);
       setCurrentStep('');
@@ -84,7 +123,6 @@ export default function BeginButton() {
             <p className="text-gray-600 mb-4">
               {currentStep}
             </p>
-            
             {/* Progress bar */}
             <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
               <div 
@@ -92,10 +130,10 @@ export default function BeginButton() {
                 style={{ width: `${progress}%` }}
               ></div>
             </div>
-            
             <p className="text-sm text-gray-500">
               {Math.round(progress)}% Complete
             </p>
+            {warning && <p className="text-sm text-yellow-600 mt-2">{warning}</p>}
           </div>
         </div>
       </div>
@@ -111,14 +149,14 @@ export default function BeginButton() {
         <p className="text-lg text-gray-600 mb-8">
           Your intelligent entity search and knowledge retrieval system
         </p>
-        
         <button
           onClick={handleBegin}
           className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 px-8 rounded-full text-lg transition-colors duration-200 shadow-sm hover:shadow-md"
         >
           Begin
         </button>
-        
+        {error && <p className="text-sm text-red-600 mt-4">{error}</p>}
+        {warning && <p className="text-sm text-yellow-600 mt-2">{warning}</p>}
         <p className="text-sm text-gray-500 mt-4">
           Click to optimize the system and start searching
         </p>

@@ -37,7 +37,7 @@ class FastWebSearchService {
 
   constructor() {
     // Initialize clients
-    this.exa = new Exa(process.env.EXA_API_KEY!);
+    this.exa = new Exa(process.env.EXA_API_KEY || process.env.EXASEARCH_API_KEY!);
     this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     
     // Clean up old cache entries periodically
@@ -45,12 +45,15 @@ class FastWebSearchService {
   }
 
   async search(query: string, options: SearchOptions = {}): Promise<FastSearchResult> {
+    // Smart query analysis to determine search depth and strategy
+    const queryType = this.analyzeQueryType(query);
+    
     const {
-      numResults = 5,
-      searchType = 'neural',
-      useAutoprompt = true,
+      numResults = queryType === 'specific' ? 8 : 5, // More results for specific queries
+      searchType = queryType === 'specific' ? 'keyword' : 'neural', // Keyword for specific, neural for general
+      useAutoprompt = queryType !== 'specific', // No autoprompt for specific queries
       includeDomains,
-      maxSummaryLength = 300,
+      maxSummaryLength = queryType === 'specific' ? 500 : 300, // Longer summaries for specific queries
       enableEntityCaching = true,
       enableParallelProcessing = true
     } = options;
@@ -73,7 +76,7 @@ class FastWebSearchService {
 
       // Step 2: Execute search with optimized parameters
       const searchOptions = {
-        numResults: Math.min(numResults, 3), // Reduced to 3 for speed
+        numResults: queryType === 'specific' ? 8 : Math.min(numResults, 3), // More results for specific queries
         type: searchType as "neural" | "keyword",
         useAutoprompt: useAutoprompt,
         ...(includeDomains && { includeDomains })
@@ -90,7 +93,7 @@ class FastWebSearchService {
       const processingTasks = [];
 
       // Task 1: Extract content for summary generation
-      const contentTask = this.extractContent(results.map(r => r.id), 600); // Further reduced for speed
+      const contentTask = this.extractContent(results.map(r => r.id), queryType === 'specific' ? 1200 : 600); // More content for specific queries
       processingTasks.push(contentTask);
 
       // Task 2: Entity caching (if enabled)
@@ -110,7 +113,8 @@ class FastWebSearchService {
       const summary = await this.generateSummary(
         query,
         contentResponse.status === 'fulfilled' ? contentResponse.value : [],
-        maxSummaryLength
+        maxSummaryLength,
+        queryType
       );
 
       // Step 5: Extract entities from results
@@ -140,6 +144,56 @@ class FastWebSearchService {
       console.error('Fast web search failed:', error);
       return this.createEmptyResult(query);
     }
+  }
+
+  private analyzeQueryType(query: string): 'specific' | 'general' {
+    const lowerQuery = query.toLowerCase();
+    
+    // Specific query patterns that need detailed results
+    const specificPatterns = [
+      /summer programs? for/i,
+      /camps? for/i,
+      /programs? in [a-z]+/i,
+      /universities? in [a-z]+/i,
+      /colleges? in [a-z]+/i,
+      /schools? in [a-z]+/i,
+      /jobs? in [a-z]+/i,
+      /events? in [a-z]+/i,
+      /restaurants? in [a-z]+/i,
+      /hotels? in [a-z]+/i,
+      /prices? of/i,
+      /cost of/i,
+      /how much does/i,
+      /where to find/i,
+      /best [a-z]+ in [a-z]+/i,
+      /top [a-z]+ in [a-z]+/i
+    ];
+    
+    // Check if query matches specific patterns
+    for (const pattern of specificPatterns) {
+      if (pattern.test(lowerQuery)) {
+        return 'specific';
+      }
+    }
+    
+    // General definition/concept queries
+    const generalPatterns = [
+      /what is/i,
+      /who is/i,
+      /tell me about/i,
+      /explain/i,
+      /define/i,
+      /meaning of/i
+    ];
+    
+    for (const pattern of generalPatterns) {
+      if (pattern.test(lowerQuery)) {
+        return 'general';
+      }
+    }
+    
+    // Default to specific for unknown patterns
+    return 'specific';
   }
 
   private optimizeQuery(query: string): string {
@@ -191,7 +245,7 @@ class FastWebSearchService {
     }
   }
 
-  private async cacheEntities(results: any[], query: string) {
+  private async cacheEntities(results: Array<{ id: string; title: string; text: string; url: string }>[], query: string) {
     try {
       // Extract basic entities from search results without full content extraction
       const entities = results
@@ -215,7 +269,7 @@ class FastWebSearchService {
     }
   }
 
-  private async storeEntitiesInBackground(entities: any[], query: string) {
+  private async storeEntitiesInBackground(entities: Array<{ name: string; category: string; source_query: string; description: string }>[], query: string) {
     // Store entities in background without blocking the response
     setImmediate(async () => {
       try {
@@ -223,7 +277,7 @@ class FastWebSearchService {
           await helixDB.createEntity({
             name: entity.name,
             category: entity.category,
-            source_query: query,
+            source_query: entity.source_query,
             description: entity.description
           });
         }
@@ -234,7 +288,7 @@ class FastWebSearchService {
     });
   }
 
-  private async generateFollowUpQuestions(query: string, results: any[]): Promise<string[]> {
+  private async generateFollowUpQuestions(query: string, results: Array<{ id: string; title: string; text: string; url: string }>[]): Promise<string[]> {
     try {
       // Generate follow-up questions based on search results
       const titles = results.map(r => r.title).join(', ');
@@ -263,7 +317,7 @@ class FastWebSearchService {
     }
   }
 
-  private async generateSummary(query: string, contents: any[], maxLength: number): Promise<string> {
+  private async generateSummary(query: string, contents: Array<{ text: string }>[], maxLength: number, queryType: 'specific' | 'general' = 'general'): Promise<string> {
     try {
       if (contents.length === 0) {
         return `No detailed information found for "${query}".`;
@@ -276,12 +330,17 @@ class FastWebSearchService {
         .join('\n\n')
         .substring(0, 1000); // Reduced from 2000
 
+      // Different prompts for different query types
+      const systemPrompt = queryType === 'specific' 
+        ? `Generate a detailed, specific summary (max ${maxLength} characters) for the query. For program queries, you MUST include specific program names, locations, dates, costs, and contact information when available. For location-based queries, provide concrete details and actionable information. Do NOT give generic responses - be specific and helpful. If you find program names, list them. If you find costs, mention them. If you find dates, include them.`
+        : `Generate a concise summary (max ${maxLength} characters) for the query. Be brief but informative.`;
+
       const response = await this.openai.chat.completions.create({
         model: 'gpt-3.5-turbo-0125',
         messages: [
           {
             role: 'system',
-            content: `Generate a concise summary (max ${maxLength} characters) for the query. Be brief but informative.`
+            content: systemPrompt
           },
           {
             role: 'user',
@@ -299,9 +358,9 @@ class FastWebSearchService {
     }
   }
 
-  private extractEntitiesFromResults(results: any[], entityResults: any): any[] {
-    if (entityResults.status === 'fulfilled' && entityResults.value.length > 0) {
-      return entityResults.value;
+  private extractEntitiesFromResults(results: Array<{ id: string; title: string; text: string; url: string }>[], entityResults: unknown): Array<{ name: string; description: string; category: string; source: string; url?: string }> {
+    if (entityResults && Array.isArray(entityResults) && entityResults.length > 0) {
+      return entityResults as Array<{ name: string; description: string; category: string; source: string; url?: string }>;
     }
 
     // Fallback: extract basic entities from search results
@@ -335,7 +394,7 @@ class FastWebSearchService {
     return 'other';
   }
 
-  private calculateConfidence(results: any[]): 'high' | 'medium' | 'low' {
+  private calculateConfidence(results: Array<{ id: string; title: string; text: string; url: string }>): 'high' | 'medium' | 'low' {
     if (results.length >= 5) return 'high';
     if (results.length >= 3) return 'medium';
     return 'low';

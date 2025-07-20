@@ -1,41 +1,62 @@
 'use client';
 
-import { useState } from 'react';
-
-interface ToolUsage {
-  tool: string;
-  action: string;
-  parameters: any;
-  startTime: number;
-  endTime: number;
-  duration: number;
-  success: boolean;
-  result?: any;
-  error?: string;
-}
+import React from 'react';
 
 interface SearchResult {
   answer: string;
-  source: 'helixdb' | 'exa';
+  source: string;
   cached: boolean;
   performance: {
-    helixdbTime: number;
-    exaTime: number;
     totalTime: number;
+    toolTime: Record<string, number>;
   };
   reasoning: string;
-  toolUsage: ToolUsage[];
-  followUpQuestions: string[];
-  requestId: string;
+  toolUsage: Array<{
+    tool: string;
+    action: string;
+    parameters: Record<string, unknown>;
+    startTime: number;
+    endTime: number;
+    duration: number;
+    success: boolean;
+    result?: Record<string, unknown>;
+    error?: string;
+  }>;
+  agentDecisions: Array<{
+    tool: string;
+    reason: string;
+    confidence: number;
+    executed: boolean;
+    result?: Record<string, unknown>;
+    evaluation?: {
+      quality: string;
+      confidence: number;
+      issues: string[];
+      suggestions: string[];
+      shouldRetry: boolean;
+      reasoning: string;
+    };
+  }>;
+  evaluation: {
+    quality: string;
+    confidence: number;
+    issues: string[];
+    suggestions: string[];
+    shouldRetry: boolean;
+    reasoning: string;
+  };
+  followUpQuestions?: string[];
+  requestId?: string;
 }
 
 interface SearchResultsProps {
   result: SearchResult | null;
   isLoading: boolean;
+  error: string | null;
 }
 
 export default function SearchResults({ result, isLoading }: SearchResultsProps) {
-  const [showToolUsage, setShowToolUsage] = useState(false);
+  const [showToolUsage, setShowToolUsage] = React.useState(false);
 
   if (isLoading) {
     return (
@@ -168,11 +189,11 @@ export default function SearchResults({ result, isLoading }: SearchResultsProps)
             <div className="text-sm text-gray-600">Total Time</div>
           </div>
           <div className="text-center">
-            <div className="text-2xl font-bold text-green-600">{result.performance.helixdbTime}ms</div>
+            <div className="text-2xl font-bold text-green-600">{result.performance.toolTime.helixdb_search || 0}ms</div>
             <div className="text-sm text-gray-600">HelixDB Time</div>
           </div>
           <div className="text-center">
-            <div className="text-2xl font-bold text-orange-600">{result.performance.exaTime}ms</div>
+            <div className="text-2xl font-bold text-orange-600">{result.performance.toolTime.exa_search || 0}ms</div>
             <div className="text-sm text-gray-600">Web Search Time</div>
           </div>
         </div>
@@ -182,18 +203,20 @@ export default function SearchResults({ result, isLoading }: SearchResultsProps)
       <div className="bg-white rounded-lg shadow-md p-6">
         <h3 className="text-lg font-semibold text-gray-800 mb-4">💡 Follow-up Questions</h3>
         <div className="space-y-2">
-          {result.followUpQuestions.map((question, index) => (
+          {result.followUpQuestions?.map((question: string, index: number) => (
             <div key={index} className="p-3 bg-gray-50 rounded-lg text-gray-700">
               {question}
             </div>
-          ))}
+          )) || <p className="text-gray-500">No follow-up questions available</p>}
         </div>
       </div>
 
       {/* Request ID */}
-      <div className="text-center text-xs text-gray-500">
-        Request ID: {result.requestId}
-      </div>
+      {result.requestId && (
+        <div className="text-center text-xs text-gray-500">
+          Request ID: {result.requestId}
+        </div>
+      )}
     </div>
   );
 } 

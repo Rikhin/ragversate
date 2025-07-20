@@ -92,8 +92,12 @@ class HelixDBService {
       this.isConnected = true;
       console.log('✅ HelixDB connected successfully');
       
-      // Automatically warm cache on connection to ensure data persistence
-      await this.warmCache();
+      // Warm cache in background - don't block the connection
+      if (this.entityCache.size === 0 || !this.lastCacheTime || Date.now() - this.lastCacheTime > 300000) {
+        this.warmCache().catch(error => console.warn('⚠️ Background cache warming failed:', error));
+      } else {
+        console.log(`✅ Using existing cache with ${this.entityCache.size} entities`);
+      }
     } catch (error) {
       console.error('❌ Failed to connect to HelixDB:', error);
       throw new Error('HelixDB connection failed. Make sure the instance is running with `helix deploy`');
@@ -109,6 +113,13 @@ class HelixDBService {
         return;
       }
 
+      // NEW: Only warm cache if it's been more than 10 minutes or cache is empty
+      const timeSinceLastWarm = this.lastCacheTime ? Date.now() - this.lastCacheTime : Infinity;
+      if (this.entityCache.size > 0 && timeSinceLastWarm < 600000) { // 10 minutes
+        console.log(`✅ Cache already warm (${this.entityCache.size} entities, warmed ${Math.floor(timeSinceLastWarm / 60000)} minutes ago)`);
+        return;
+      }
+
       this.isWarmingCache = true;
       console.log('🔥 Warming HelixDB cache...');
       const entities = await this.getAllEntitiesCached();
@@ -117,7 +128,7 @@ class HelixDBService {
       const currentCacheSize = this.entityCache.size;
       const newEntitiesCount = entities.length;
       
-      if (currentCacheSize === 0 || newEntitiesCount > currentCacheSize) {
+      if (currentCacheSize === 0 || newEntitiesCount > currentCacheSize * 1.1) { // Only rebuild if 10% more entities
         console.log(`🔄 Rebuilding cache: ${currentCacheSize} → ${newEntitiesCount} entities`);
         this.nameIndex.clear();
         this.entityCache.clear();
@@ -129,9 +140,10 @@ class HelixDBService {
           this.nameIndex.get(nameKey)!.push(entity);
         }
       } else {
-        console.log(`✅ Cache already warm with ${currentCacheSize} entities`);
+        console.log(`✅ Cache already warm with ${currentCacheSize} entities (no significant changes)`);
       }
       
+      this.lastCacheTime = Date.now();
       console.log(`✅ Cache warmed with ${this.entityCache.size} entities`);
     } catch (error) {
       console.warn('⚠️ Failed to warm cache:', error);
@@ -308,145 +320,61 @@ class HelixDBService {
 
     try {
       const queryLower = query.toLowerCase().trim();
-      let matches: Entity[] = [];
       
-      // 1. Fast exact name match
+      // Fast exact name match first
       if (this.nameIndex.has(queryLower)) {
-        matches = this.nameIndex.get(queryLower)!;
+        const matches = this.nameIndex.get(queryLower)!;
+        console.log(`🚀 Found ${matches.length} exact matches in HelixDB cache - early exit`);
+        return { entities: matches.slice(0, limit), total: matches.length };
       }
       
-      // 2. Partial match and fuzzy match for typos
-      if (matches.length === 0) {
-        for (const [name, entities] of this.nameIndex.entries()) {
-          // Exact substring match
-          if (name.includes(queryLower) || queryLower.includes(name)) {
-            matches.push(...entities);
-          }
-          // Fuzzy match for typos (similarity > 0.8)
-          else if (this.calculateSimilarity(queryLower, name) > 0.8) {
-            matches.push(...entities);
-          }
+      // Fast partial name match
+      for (const [name, entities] of this.nameIndex.entries()) {
+        if (name.includes(queryLower) || queryLower.includes(name)) {
+          console.log(`🚀 Found ${entities.length} partial matches in HelixDB cache - early exit`);
+          return { entities: entities.slice(0, limit), total: entities.length };
         }
       }
       
-      // 3. Search in all entities for better coverage
-      if (matches.length === 0) {
+      // Quick search in all entities (only if cache is warm)
+      if (this.entityCache.size > 0) {
         const allEntities = Array.from(this.entityCache.values());
+        const matches: Entity[] = [];
+        
         for (const entity of allEntities) {
           const nameLower = entity.name.toLowerCase();
           const descriptionLower = entity.description.toLowerCase();
           
-          // Check if query matches name or description
+          // Simple text matching - no complex scoring
           if (nameLower.includes(queryLower) || 
               queryLower.includes(nameLower) ||
-              descriptionLower.includes(queryLower) ||
-              this.calculateSimilarity(queryLower, nameLower) > 0.7) {
+              descriptionLower.includes(queryLower)) {
             matches.push(entity);
+            
+            // Early exit if we have enough matches
+            if (matches.length >= limit) {
+              console.log(`🚀 Found ${matches.length} matches in HelixDB cache - early exit`);
+              return { entities: matches, total: matches.length };
+            }
           }
         }
-      }
-      
-      if (matches.length >= limit) {
-        console.log(`🚀 Found ${matches.length} matches in HelixDB cache - early exit`);
-        return { entities: matches.slice(0, limit), total: matches.length };
-      }
-      
-      // Preprocess query once
-      const { queryLower: queryLowerFinal, queryWords, patterns } = this.preprocessQuery(query);
-      
-      // Multi-stage search for maximum efficiency:
-      // 1. Fast text matching with early exit
-      // 2. Graph traversal for related entities (only if needed)
-      // 3. Semantic similarity scoring (only if needed)
-      
-      // Stage 1: Fast text matching with early exit
-      const textMatches = matches.filter((entity: Entity) => {
-        const nameLower = entity.name.toLowerCase();
-        const descriptionLower = entity.description.toLowerCase();
         
-        // Exact name match (highest priority) - immediate return
-        if (nameLower === queryLowerFinal) return true;
-        
-        // Pattern-based matching (if we have a pattern match)
-        if (patterns && patterns[1]) {
-          const targetName = patterns[1].trim();
-          if (nameLower === targetName) return true;
+        if (matches.length > 0) {
+          console.log(`🔍 Global HelixDB search found ${matches.length} entities for "${query}"`);
+          return { entities: matches.slice(0, limit), total: matches.length };
         }
-        
-        // Name contains query or query contains name
-        if (nameLower.includes(queryLowerFinal) || queryLowerFinal.includes(nameLower)) return true;
-        
-        // Description contains query words
-        return queryWords.some(word => descriptionLower.includes(word));
-      });
-      
-      // Early exit if we have enough exact matches
-      if (textMatches.length >= limit) {
-        console.log(`🚀 Found ${textMatches.length} exact matches in global HelixDB cache - early exit`);
-        return {
-          entities: textMatches.slice(0, limit),
-          total: textMatches.length
-        };
       }
       
-      // Early exit for high-confidence single matches
-      const highConfidenceMatches = textMatches.filter(entity => {
-        const nameLower = entity.name.toLowerCase();
-        return nameLower === queryLowerFinal || 
-               nameLower.includes(queryLowerFinal) || 
-               queryLowerFinal.includes(nameLower);
-      });
-      
-      if (highConfidenceMatches.length >= 1) {
-        console.log(`🎯 Found ${highConfidenceMatches.length} high-confidence matches - early exit`);
-        return {
-          entities: highConfidenceMatches.slice(0, limit),
-          total: highConfidenceMatches.length
-        };
-      }
-      
-      // Stage 2: Graph traversal for related entities (only if needed and no good matches)
-      let graphResults: Entity[] = [];
-      if (textMatches.length > 0 && textMatches.length < 2) {
-        const graphResult = await this.traverseGraph(textMatches[0].name, 1, limit);
-        graphResults = graphResult.entities as Entity[];
-      }
-      
-      // Stage 3: Combine and score results (only if we still need more)
-      const allResults = [...textMatches, ...graphResults];
-      const uniqueResults = this.deduplicateEntities(allResults);
-      
-      // Early exit if we have enough results after deduplication
-      if (uniqueResults.length >= limit) {
-        console.log(`✅ Found ${uniqueResults.length} unique results after deduplication - early exit`);
-        return {
-          entities: uniqueResults.slice(0, limit),
-          total: uniqueResults.length
-        };
-      }
-      
-      // Only do expensive scoring if we need to rank results
-      const scoredResults = uniqueResults.map(entity => ({
-        entity,
-        score: this.calculateSemanticScore(entity, queryLowerFinal, queryWords)
-      }));
-      
-      scoredResults.sort((a, b) => b.score - a.score);
-      
-      const finalResult = {
-        entities: scoredResults.slice(0, limit).map((r: {entity: Entity; score: number}) => r.entity),
-        total: scoredResults.length
-      };
-      
-      console.log(`🔍 Global HelixDB search found ${finalResult.total} entities for "${query}"`);
-      return finalResult;
+      // No matches found
+      console.log(`🔍 Global HelixDB search found 0 entities for "${query}"`);
+      return { entities: [], total: 0 };
     } catch (error) {
       console.error('Error in semantic search:', error);
       return { entities: [], total: 0 };
     }
   }
 
-  // Calculate semantic similarity score
+  // Enhanced semantic similarity scoring with multiple methods
   private calculateSemanticScore(entity: Entity, query: string, queryWords: string[]): number {
     let score = 0;
     const nameLower = entity.name.toLowerCase();
@@ -468,6 +396,14 @@ class HelixDBService {
     if (nameLower === queryPhrase) {
       score += 85;
     }
+    
+    // Enhanced cosine similarity for name matching - 60 points max
+    const nameSimilarity = this.calculateCosineSimilarity(queryLower, nameLower);
+    score += nameSimilarity * 60;
+    
+    // Enhanced cosine similarity for description matching - 40 points max
+    const descriptionSimilarity = this.calculateCosineSimilarity(queryLower, descriptionLower);
+    score += descriptionSimilarity * 40;
     
     // Partial name matching with word boundaries - 40 points per word
     const nameWords = nameLower.split(/\s+/);
@@ -514,6 +450,51 @@ class HelixDBService {
     }
     
     return score;
+  }
+
+  // Enhanced cosine similarity calculation
+  private calculateCosineSimilarity(text1: string, text2: string): number {
+    const words1 = text1.toLowerCase().split(/\s+/).filter(word => word.length > 2);
+    const words2 = text2.toLowerCase().split(/\s+/).filter(word => word.length > 2);
+    
+    if (words1.length === 0 || words2.length === 0) {
+      return 0;
+    }
+    
+    // Create word frequency vectors
+    const wordFreq1 = new Map<string, number>();
+    const wordFreq2 = new Map<string, number>();
+    
+    // Count word frequencies
+    for (const word of words1) {
+      wordFreq1.set(word, (wordFreq1.get(word) || 0) + 1);
+    }
+    for (const word of words2) {
+      wordFreq2.set(word, (wordFreq2.get(word) || 0) + 1);
+    }
+    
+    // Get all unique words
+    const allWords = new Set([...wordFreq1.keys(), ...wordFreq2.keys()]);
+    
+    // Calculate dot product and magnitudes
+    let dotProduct = 0;
+    let magnitude1 = 0;
+    let magnitude2 = 0;
+    
+    for (const word of allWords) {
+      const freq1 = wordFreq1.get(word) || 0;
+      const freq2 = wordFreq2.get(word) || 0;
+      
+      dotProduct += freq1 * freq2;
+      magnitude1 += freq1 * freq1;
+      magnitude2 += freq2 * freq2;
+    }
+    
+    if (magnitude1 === 0 || magnitude2 === 0) {
+      return 0;
+    }
+    
+    return dotProduct / (Math.sqrt(magnitude1) * Math.sqrt(magnitude2));
   }
 
   // Deduplicate entities while preserving order

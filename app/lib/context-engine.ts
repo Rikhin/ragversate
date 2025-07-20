@@ -1,5 +1,5 @@
 import { helixDB } from './helixdb';
-import { optimizedSupermemoryService } from './supermemory-optimized';
+// Removed Supermemory import - not working due to rate limits
 import { logger } from './logging';
 
 // Safety flag - set to true to enable context engine (default: enabled)
@@ -47,7 +47,8 @@ class ContextEngine {
 
   constructor() {
     if (CONTEXT_ENGINE_ENABLED) {
-      this.initializeContextGraph();
+      // Lazy initialization - don't initialize immediately
+      console.log('🧠 Context Engine enabled (lazy initialization)');
     } else {
       console.log('⚠️ Context Engine is disabled. Set CONTEXT_ENGINE_ENABLED=true to enable.');
     }
@@ -70,18 +71,21 @@ class ContextEngine {
   private async initializeContextGraph(): Promise<void> {
     await this.safeOperation(async () => {
       try {
-        // Build entity relationship graph from HelixDB
+        // Build entity relationship graph from HelixDB (optimized for speed)
         const entities = await helixDB.getAllEntities();
         
-        for (const entity of entities) {
+        // Only process first 100 entities for faster initialization
+        const entitiesToProcess = entities.slice(0, 100);
+        
+        for (const entity of entitiesToProcess) {
           this.entityGraph.set(entity.name, new Set());
           this.topicGraph.set(entity.category, new Set());
           
-          // Find related entities based on descriptions and categories
-          for (const otherEntity of entities) {
+          // Find related entities based on descriptions and categories (limited scope)
+          for (const otherEntity of entitiesToProcess) {
             if (entity.id !== otherEntity.id) {
               const relationship = this.calculateRelationship(entity, otherEntity);
-              if (relationship > 0.3) { // Threshold for meaningful relationship
+              if (relationship > 0.5) { // Higher threshold for faster processing
                 this.entityGraph.get(entity.name)!.add(otherEntity.name);
                 this.topicGraph.get(entity.category)!.add(otherEntity.category);
               }
@@ -89,9 +93,11 @@ class ContextEngine {
           }
         }
         
-        logger.log('info', 'Context graph initialized', { 
+        logger.log('info', 'Context graph initialized (optimized)', { 
           entities: this.entityGraph.size,
-          topics: this.topicGraph.size 
+          topics: this.topicGraph.size,
+          processed: entitiesToProcess.length,
+          total: entities.length
         });
       } catch (error) {
         logger.log('warn', 'Failed to initialize context graph', { error: (error as Error).message });
@@ -121,19 +127,24 @@ class ContextEngine {
   }
 
   // Main reactive context analysis
-  async analyzeContext(query: string, userId: string): Promise<ContextualUnderstanding | null> {
+  async analyzeContext(query: string, _userId: string): Promise<ContextualUnderstanding | null> {
     return this.safeOperation(async () => {
       const startTime = Date.now();
       
+      // Lazy initialize context graph if not done yet
+      if (this.entityGraph.size === 0) {
+        await this.initializeContextGraph();
+      }
+      
       // Get or create user context
-      let context = this.contextCache.get(userId);
+      let context = this.contextCache.get(_userId);
       if (!context) {
-        context = await this.buildInitialContext(userId);
-        this.contextCache.set(userId, context);
+        context = await this.buildInitialContext(_userId);
+        this.contextCache.set(_userId, context);
       }
 
       // Update active session
-      this.updateActiveSession(userId, query);
+      this.updateActiveSession(_userId, query);
 
       // Real-time context analysis
       const queryIntent = this.analyzeQueryIntent(query);
@@ -155,11 +166,11 @@ class ContextEngine {
         ].slice(-10) // Keep last 10 interactions
       };
 
-      this.contextCache.set(userId, updatedContext);
+      this.contextCache.set(_userId, updatedContext);
       
       const duration = Date.now() - startTime;
       logger.log('info', 'Context analysis completed', { 
-        userId, 
+        userId: _userId, 
         duration, 
         entitiesFound: relatedEntities.length,
         intent: queryIntent 
@@ -406,38 +417,20 @@ class ContextEngine {
     this.activeSessions.set(userId, session);
   }
 
-  private async buildInitialContext(userId: string): Promise<ContextualUnderstanding> {
-    try {
-      const userContext = await optimizedSupermemoryService.getUserContext(userId);
-      
-      return {
-        currentTopics: userContext.currentTopics,
-        relatedEntities: [],
-        userPatterns: [],
-        conversationFlow: [],
-        likelyNextQueries: [],
-        suggestedExpansions: [],
-        contextGaps: [],
-        entityRelationships: new Map(),
-        topicHierarchy: new Map(),
-        queryIntent: 'explore'
-      };
-    } catch (error) {
-      logger.log('warn', 'Failed to build initial context', { userId, error: (error as Error).message });
-      
-      return {
-        currentTopics: [],
-        relatedEntities: [],
-        userPatterns: [],
-        conversationFlow: [],
-        likelyNextQueries: [],
-        suggestedExpansions: [],
-        contextGaps: [],
-        entityRelationships: new Map(),
-        topicHierarchy: new Map(),
-        queryIntent: 'explore'
-      };
-    }
+  private async buildInitialContext(_userId: string): Promise<ContextualUnderstanding> {
+    // Skip Supermemory calls for performance - use default context
+    return {
+      currentTopics: [],
+      relatedEntities: [],
+      userPatterns: [],
+      conversationFlow: [],
+      likelyNextQueries: [],
+      suggestedExpansions: [],
+      contextGaps: [],
+      entityRelationships: new Map(),
+      topicHierarchy: new Map(),
+      queryIntent: 'explore'
+    };
   }
 
   private calculateSimilarity(str1: string, str2: string): number {

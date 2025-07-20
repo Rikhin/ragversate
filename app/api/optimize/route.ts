@@ -1,55 +1,62 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { helixDB } from '../../lib/helixdb';
-import { popularEntitiesPrefetcher } from '../../lib/prefetch-popular-entities';
-import { logger } from '../../lib/logging';
+import { NextResponse } from 'next/server';
+import { helixDB } from '@/app/lib/helixdb';
+import { contextEngine } from '@/app/lib/context-engine';
+import { multiHelixDB } from '@/app/lib/multi-helixdb';
 
-export async function POST(request: NextRequest) {
+export async function POST() {
+  const results: Record<string, string> = {};
+  let generalOk = false;
+
   try {
-    logger.log('info', 'Starting optimization process');
-    
-    // 1. Load popular entities from file
-    logger.log('info', 'Loading popular entities');
-    await popularEntitiesPrefetcher.loadPopularEntities();
-    
-    // 2. Clean up old entries
-    logger.log('info', 'Cleaning up old entries');
-    popularEntitiesPrefetcher.cleanupOldEntries();
-    
-    // 3. Pre-fetch popular entities into HelixDB cache
-    logger.log('info', 'Pre-fetching popular entities');
-    await popularEntitiesPrefetcher.prefetchPopularEntities(helixDB);
-    
-    // 4. Warm up HelixDB cache
-    logger.log('info', 'Warming HelixDB cache');
-    // The cache warming happens automatically during connection
-    await helixDB.connect();
-    
-    // 5. Log startup metrics
-    const stats = popularEntitiesPrefetcher.getStats();
-    logger.log('info', 'Startup statistics', stats);
-    
-    // 6. Log system health
-    const isHealthy = await helixDB.healthCheck();
-    logger.log('info', 'System health check', { isHealthy });
-    
-    logger.log('info', 'Optimization completed successfully');
-    
-    return NextResponse.json({
-      success: true,
-      message: 'Optimization completed successfully',
-      stats,
-      systemHealth: isHealthy
-    });
-    
+    // 1. Warm HelixDB (general)
+    try {
+      await helixDB.connect();
+      results['general'] = 'cache warmed';
+      generalOk = true;
+    } catch (err) {
+      results['general'] = 'FAILED: ' + (err instanceof Error ? err.message : 'Unknown error');
+    }
+
+    // 2. Warm multi-HelixDB (optional modes)
+    const optionalModes = ['mentors', 'scholarships', 'summer-programs'] as const;
+    for (const mode of optionalModes) {
+      try {
+        await multiHelixDB.connect(mode);
+        results[mode] = 'cache warmed';
+      } catch (err) {
+        results[mode] = 'SKIPPED: ' + (err instanceof Error ? err.message : 'Not running or no data');
+      }
+    }
+
+    // 3. Initialize Context Engine
+    try {
+      if (contextEngine && typeof contextEngine["initializeContextGraph"] === "function") {
+        await contextEngine["initializeContextGraph"]();
+        results['contextEngine'] = 'initialized';
+      }
+    } catch (err) {
+      results['contextEngine'] = 'FAILED: ' + (err instanceof Error ? err.message : 'Unknown error');
+    }
+
+    // 4. Return summary
+    if (generalOk) {
+      return NextResponse.json({
+        status: 'ok',
+        message: 'Optimization complete',
+        details: results
+      });
+    } else {
+      return NextResponse.json({
+        status: 'error',
+        message: 'Failed to warm general HelixDB cache',
+        details: results
+      }, { status: 500 });
+    }
   } catch (error) {
-    logger.log('error', 'Optimization failed', { 
-      error: error instanceof Error ? error.message : String(error) 
-    });
-    
     return NextResponse.json({
-      success: false,
-      message: 'Optimization failed',
-      error: error instanceof Error ? error.message : String(error)
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Unknown error during optimization',
+      details: results
     }, { status: 500 });
   }
 } 

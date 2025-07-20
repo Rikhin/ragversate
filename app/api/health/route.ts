@@ -1,52 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { helixDB } from '@/app/lib/helixdb';
+import { NextResponse } from 'next/server';
 
-export async function GET(req: NextRequest) {
-  try {
-    // Check HelixDB connection and cache status
-    const helixStatus = await helixDB.healthCheck();
-    
-    // Check if cache is warmed by checking if we have entities in cache
-    const cacheWarmed = helixDB.isCacheWarmed();
-    
-    // Check environment variables
-    const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
-    const hasExaKey = !!process.env.EXA_API_KEY;
-    
-    const status = {
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      services: {
-        helixdb: {
-          connected: helixStatus,
-          cacheWarmed: cacheWarmed
-        },
-        openai: hasOpenAIKey ? 'configured' : 'missing_key',
-        exa: hasExaKey ? 'configured' : 'missing_key'
-      },
-      environment: process.env.NODE_ENV || 'development'
-    };
-
-    const isHealthy = helixStatus && hasOpenAIKey && hasExaKey;
-    
-    return NextResponse.json(status, { 
-      status: isHealthy ? 200 : 503 
-    });
-  } catch (error) {
-    console.error('Health check failed:', error);
-    
-    return NextResponse.json({
-      status: 'error',
-      timestamp: new Date().toISOString(),
-      error: error instanceof Error ? error.message : 'Unknown error',
-      services: {
-        helixdb: {
-          connected: false,
-          cacheWarmed: false
-        },
-        openai: !!process.env.OPENAI_API_KEY ? 'configured' : 'missing_key',
-        exa: !!process.env.EXA_API_KEY ? 'configured' : 'missing_key'
-      }
-    }, { status: 503 });
-  }
+export async function GET() {
+  return NextResponse.json({ status: 'healthy', timestamp: Date.now() });
 } 
