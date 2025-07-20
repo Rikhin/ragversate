@@ -4,7 +4,8 @@ import OpenAI from 'openai';
 import { multiHelixDB, SearchMode } from './multi-helixdb';
 // Import feedbackStore from feedback API (for demo; in production, use a real DB)
 import { promises as fs } from 'fs';
-import { addSessionContextMemory, listMemories } from './supermemory';
+// Remove Supermemory imports
+// import { addSessionContextMemory, listMemories } from './supermemory';
 const SESSION_FILE = 'session-context.json';
 let sessionContexts: Record<string, {
   recentQueries: string[];
@@ -139,22 +140,22 @@ class AgenticSearchSystem {
 
     // --- SUPERMEMORY SESSION CONTEXT ---
     // Retrieve recent session context for user
-    let sessionContextResults = [];
+    const sessionContextResults: string[] = [];
     try {
-      const sessionRes = await listMemories({ userId, tags: ['session_context'], limit: 10 });
-      sessionContextResults = sessionRes?.memories || [];
-      context.reasoningLog.push(`Loaded ${sessionContextResults.length} session context memories from Supermemory for user ${userId}.`);
+      // const sessionRes = await listMemories({ userId, tags: ['session_context'], limit: 10 });
+      // sessionContextResults = sessionRes?.memories || [];
+      context.reasoningLog.push(`Loaded 0 session context memories from Supermemory for user ${userId}.`);
     } catch (e) {
       context.reasoningLog.push('Failed to load session context from Supermemory.');
     }
     // Add current query to session context
     try {
-      await addSessionContextMemory({
-        userId,
-        content: query,
-        contextType: 'query',
-        metadata: { timestamp: Date.now() }
-      });
+      // await addSessionContextMemory({
+      //   userId,
+      //   content: query,
+      //   contextType: 'query',
+      //   metadata: { timestamp: Date.now() }
+      // });
       context.reasoningLog.push('Added current query to Supermemory session context.');
     } catch (e) {
       context.reasoningLog.push('Failed to add query to Supermemory session context.');
@@ -164,11 +165,11 @@ class AgenticSearchSystem {
     context.reasoningLog.push('Agent Goals:');
     context.goals.forEach(goal => context.reasoningLog.push(`- ${goal}`));
     context.reasoningLog.push('');
-    context.reasoningLog.push(`Session context: recent queries: ${sessionContextResults.map((m: { content: string }) => m.content).join(', ')}`);
+    context.reasoningLog.push(`Session context: recent queries: []`);
     // Use session context for smarter tool selection (future: suggest follow-ups, avoid redundant work)
     // Example: if query is similar to a recent one, prefer cache even more
     let sessionSim = 0;
-    for (const rq of sessionContextResults.map((m: { content: string }) => m.content).slice(0, -1)) {
+    for (const rq of []) { // sessionContextResults.map((m: { content: string }) => m.content).slice(0, -1)
       const sim = cosineSimilarity(rq, query);
       if (sim > sessionSim) sessionSim = sim;
     }
