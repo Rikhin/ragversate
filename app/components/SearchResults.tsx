@@ -5,12 +5,12 @@ import { useState } from 'react';
 interface ToolUsage {
   tool: string;
   action: string;
-  parameters: Record<string, unknown>;
+  parameters: any;
   startTime: number;
   endTime: number;
   duration: number;
   success: boolean;
-  result?: unknown;
+  result?: any;
   error?: string;
 }
 
@@ -139,14 +139,14 @@ export default function SearchResults({ result, isLoading }: SearchResultsProps)
                   </pre>
                 </div>
 
-                                {usage.success && usage.result ? (
+                {usage.success && usage.result && (
                   <div className="text-sm text-gray-600 mb-2">
                     <strong>Result:</strong>
                     <pre className="mt-1 p-2 bg-green-50 rounded text-xs overflow-x-auto">
                       {JSON.stringify(usage.result, null, 2)}
                     </pre>
                   </div>
-                ) : null}
+                )}
 
                 {!usage.success && usage.error && (
                   <div className="text-sm text-red-600">

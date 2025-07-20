@@ -1,6 +1,7 @@
 import { helixDB } from './helixdb';
 import { fastWebSearch, FastSearchResult } from './fast-web-search';
 import { optimizedSupermemoryService } from './supermemory-optimized';
+import { contextEngine } from './context-engine';
 import { logger } from './logging';
 import OpenAI from 'openai';
 
@@ -22,12 +23,12 @@ export interface AgentSearchResult {
 export interface ToolUsage {
   tool: string;
   action: string;
-  parameters: Record<string, unknown>;
+  parameters: any;
   startTime: number;
   endTime: number;
   duration: number;
   success: boolean;
-  result?: unknown;
+  result?: any;
   error?: string;
 }
 
@@ -148,7 +149,57 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
   let exaTime = 0;
   let reasoning = '';
 
-  // Start with HelixDB search directly
+  // 0. Context Engine Analysis (Cursor-style reactive understanding) - OPTIONAL
+  const contextStart = Date.now();
+  console.log('🧠 [TOOL] Starting Context Engine analysis...');
+  
+  try {
+    const reactiveResponse = await contextEngine.generateReactiveResponse(query, userId);
+    const contextTime = Date.now() - contextStart;
+    
+    if (reactiveResponse) {
+      logToolUsage('ContextEngine', 'generateReactiveResponse', { query, userId }, contextStart, true, {
+        immediateAnswer: !!reactiveResponse.immediateAnswer,
+        suggestionsCount: reactiveResponse.contextAwareSuggestions.length,
+        confidence: reactiveResponse.confidence
+      });
+
+      // If we have an immediate answer from context, return it
+      if (reactiveResponse.immediateAnswer && reactiveResponse.confidence > 0.7) {
+        reasoning = `Answered from context: ${reactiveResponse.reasoning}`;
+        logger.log('info', '✅ Context Engine provided immediate answer', { 
+          query, 
+          confidence: reactiveResponse.confidence,
+          contextTime 
+        });
+        
+        return {
+          answer: reactiveResponse.immediateAnswer,
+          source: 'helixdb' as const, // Context comes from our knowledge base
+          cached: true,
+          performance: { helixdbTime: 0, exaTime: 0, totalTime: Date.now() - startTime },
+          reasoning,
+          toolUsage
+        };
+      }
+
+      logger.log('info', '🧠 Context Engine analysis completed', { 
+        query, 
+        confidence: reactiveResponse.confidence,
+        contextTime 
+      });
+    } else {
+      logToolUsage('ContextEngine', 'generateReactiveResponse', { query, userId }, contextStart, true, {
+        disabled: true,
+        message: 'Context Engine is disabled or returned null'
+      });
+      logger.log('info', '🧠 Context Engine disabled or unavailable', { query });
+    }
+  } catch (error) {
+    const contextTime = Date.now() - contextStart;
+    logToolUsage('ContextEngine', 'generateReactiveResponse', { query, userId }, contextStart, false, undefined, (error as Error).message);
+    logger.log('warn', 'Context Engine analysis failed', { error: (error as Error).message });
+  }
 
   // 1. Try HelixDB (fuzzy match) - also check for similar patterns
   const helixStart = Date.now();
@@ -189,8 +240,7 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
     }
   } catch (error) {
     helixdbTime = Date.now() - helixStart;
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    logToolUsage('HelixDB', 'semanticSearch', { query, limit: 1 }, helixStart, false, undefined, errorMessage);
+    logToolUsage('HelixDB', 'semanticSearch', { query, limit: 1 }, helixStart, false, undefined, error.message);
   }
 
   // 2. Check for similar query patterns using enhanced matching
@@ -224,8 +274,7 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
       logToolUsage('PatternMatcher', 'findSimilarPattern', { query }, patternStart, true, { similarQuery: null });
     }
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    logToolUsage('PatternMatcher', 'findSimilarPattern', { query }, patternStart, false, undefined, errorMessage);
+    logToolUsage('PatternMatcher', 'findSimilarPattern', { query }, patternStart, false, undefined, error.message);
   }
 
   // 3. If not found, search Exa
@@ -279,9 +328,8 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
       
       logger.log('info', '🤖 Summary generated', { query, summaryLength: summary.length });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logToolUsage('GPT-4o', 'summarize', { query, entitiesCount: exaResult.entities.length }, gptStart, false, undefined, errorMessage);
-      logger.log('error', 'Failed to summarize Exa results', { error: errorMessage });
+      logToolUsage('GPT-4o', 'summarize', { query, entitiesCount: exaResult.entities.length }, gptStart, false, undefined, error.message);
+      logger.log('error', 'Failed to summarize Exa results', { error });
       summary = exaResult.summary || exaResult.entities.map(r => r.name).join('; ');
     }
 
@@ -319,13 +367,12 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
       });
       
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       logToolUsage('HelixDB', 'createEntityWithDeduplication', {
         name: query,
         category: 'summary',
         source_query: query
-      }, cacheStart, false, undefined, errorMessage);
-      logger.log('error', 'Failed to cache summary in HelixDB', { error: errorMessage });
+      }, cacheStart, false, undefined, error.message);
+      logger.log('error', 'Failed to cache summary in HelixDB', { error });
       reasoning += ' Failed to cache summary.';
     }
 
@@ -338,20 +385,27 @@ export async function agentSearch(query: string, userId: string): Promise<AgentS
       toolUsage
     };
 
-    // Context Engine removed - no longer updating context
+    // Update context with search results for future reactive responses (OPTIONAL)
+    try {
+      await contextEngine.updateContextWithResults(userId, query, {
+        answer: summary,
+        entities: exaResult.entities
+      });
+    } catch (error) {
+      logger.log('warn', 'Failed to update context with results', { error: (error as Error).message });
+    }
 
     return finalResult;
   } catch (error) {
     exaTime = Date.now() - exaStart;
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    logToolUsage('Exa', 'webSearch', { query, numResults: 3, searchType: 'neural' }, exaStart, false, undefined, errorMessage);
+    logToolUsage('Exa', 'webSearch', { query, numResults: 3, searchType: 'neural' }, exaStart, false, undefined, error.message);
     
     return {
       answer: 'Sorry, I encountered an error while searching for information.',
       source: 'exa',
       cached: false,
       performance: { helixdbTime, exaTime, totalTime: Date.now() - startTime },
-      reasoning: `Error during web search: ${errorMessage}`,
+      reasoning: `Error during web search: ${error.message}`,
       toolUsage
     };
   }

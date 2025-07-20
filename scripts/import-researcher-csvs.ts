@@ -321,8 +321,7 @@ async function storeEntities(entities: ValidatedEntity[]) {
       }
     } catch (error) {
       errorCount++;
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.log(`   ❌ Failed to store ${entity.name}:`, errorMessage);
+      console.log(`   ❌ Failed to store ${entity.name}:`, error.message);
     }
   }
   
@@ -372,8 +371,7 @@ async function importResearcherCSVs() {
         allEntities.push(...entities);
         console.log(`   ✅ Completed: ${path.basename(file)}`);
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        console.log(`   ❌ Error processing ${path.basename(file)}:`, errorMessage);
+        console.log(`   ❌ Error processing ${path.basename(file)}:`, error.message);
       }
     }
     
@@ -401,8 +399,7 @@ async function importResearcherCSVs() {
     }
     
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('❌ Import failed:', errorMessage);
+    console.error('❌ Import failed:', error);
   }
 }
 

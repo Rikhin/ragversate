@@ -43,22 +43,27 @@ class PopularEntitiesPrefetcher {
   }
 
   // Pre-fetch popular entities into HelixDB cache
-  async prefetchPopularEntities(helixDB: { semanticSearch: (query: string, limit: number) => Promise<{ entities: Array<{ name: string }> }> }): Promise<void> {
+  async prefetchPopularEntities(helixDB: any): Promise<void> {
     try {
       console.log('🚀 Pre-fetching popular entities...');
+      
       const popularEntities = this.getPopularEntities();
       console.log(`📊 Found ${popularEntities.length} popular entities to pre-fetch`);
+
+      // Pre-fetch each popular entity
       for (const entity of popularEntities) {
         try {
+          // Search for the entity in HelixDB to ensure it's cached
           await helixDB.semanticSearch(entity.name, 1);
           console.log(`✅ Pre-fetched: ${entity.name} (${entity.frequency} queries)`);
-        } catch (_err) {
-          console.warn(`⚠️ Failed to pre-fetch ${entity.name}`);
+        } catch (error) {
+          console.warn(`⚠️ Failed to pre-fetch ${entity.name}:`, error);
         }
       }
+
       console.log('🎉 Popular entities pre-fetch complete');
-    } catch (_err) {
-      console.error('❌ Error pre-fetching popular entities');
+    } catch (error) {
+      console.error('❌ Error pre-fetching popular entities:', error);
     }
   }
 
@@ -160,7 +165,7 @@ export const trackEntityAccess = (entityName: string, query: string) =>
 export const getPopularEntities = () => 
   popularEntitiesPrefetcher.getPopularEntities();
 
-export const prefetchPopularEntities = (helixDB: { semanticSearch: (query: string, limit: number) => Promise<{ entities: Array<{ name: string }> }> }) => 
+export const prefetchPopularEntities = (helixDB: any) => 
   popularEntitiesPrefetcher.prefetchPopularEntities(helixDB);
 
 export const getSuggestions = (partialQuery: string) => 

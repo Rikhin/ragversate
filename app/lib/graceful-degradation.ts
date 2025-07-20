@@ -31,7 +31,7 @@ class GracefulDegradation {
   async handleApiFailure(
     error: Error,
     query: string,
-    fallbackData?: unknown
+    fallbackData?: any
   ): Promise<FallbackResponse> {
     const errorMessage = error.message.toLowerCase();
     
@@ -64,16 +64,10 @@ class GracefulDegradation {
   }
 
   // Create response for network errors with cached data
-  private createNetworkErrorResponse(query: string, fallbackData?: unknown): FallbackResponse {
+  private createNetworkErrorResponse(query: string, fallbackData?: any): FallbackResponse {
     if (fallbackData && this.config.showPartialResults) {
       return {
-        entities: (fallbackData as { entities?: Array<{
-          name: string;
-          description: string;
-          category: string;
-          source: string;
-          confidence: string;
-        }> }).entities || [],
+        entities: fallbackData.entities || [],
         message: `Showing cached results while we reconnect. Some information may be outdated.`,
         degraded: true,
       };
@@ -96,16 +90,10 @@ class GracefulDegradation {
   }
 
   // Create generic error response
-  private createGenericErrorResponse(query: string, fallbackData?: unknown): FallbackResponse {
+  private createGenericErrorResponse(query: string, fallbackData?: any): FallbackResponse {
     if (fallbackData && this.config.showPartialResults) {
       return {
-        entities: (fallbackData as { entities?: Array<{
-          name: string;
-          description: string;
-          category: string;
-          source: string;
-          confidence: string;
-        }> }).entities || [],
+        entities: fallbackData.entities || [],
         message: `Showing partial results. Some features may be limited.`,
         degraded: true,
       };
@@ -181,7 +169,7 @@ export const gracefulDegradation = new GracefulDegradation();
 export const handleApiFailure = (
   error: Error,
   query: string,
-  fallbackData?: unknown
+  fallbackData?: any
 ) => gracefulDegradation.handleApiFailure(error, query, fallbackData);
 
 export const retryWithBackoff = <T>(fn: () => Promise<T>) => 
