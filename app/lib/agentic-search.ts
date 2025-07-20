@@ -101,6 +101,15 @@ class AgenticSearchSystem {
     'exa_search'
   ];
 
+  // Helper to select model based on query
+  private selectModel(query: string): string {
+    // Use gpt-4o for long or complex queries, gpt-3.5-turbo for short/simple
+    if (query.length > 120 || /why|how|explain|summarize|analyze|compare|difference|steps|process|detailed|reason/i.test(query)) {
+      return 'gpt-4o';
+    }
+    return 'gpt-3.5-turbo';
+  }
+
   constructor() {
     this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   }
@@ -635,7 +644,7 @@ Return a JSON object with:
 
 Example: {"type": "definition", "reasoning": "Asking for what something is", "confidence": 0.9}`;
     const response = await this.openai.chat.completions.create({
-      model: 'gpt-4',
+      model: this.selectModel(query),
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
       max_tokens: 100,
@@ -656,7 +665,7 @@ Content: "${content}"
 
 Please provide a concise summary that captures the most important points.`;
     const response = await this.openai.chat.completions.create({
-      model: 'gpt-4',
+      model: this.selectModel(query + content),
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
       max_tokens: 200,
@@ -690,7 +699,7 @@ Decision Criteria:
 Please provide the next tool to execute and its reason.
 If no tool is suitable, return null.`;
     const response = await this.openai.chat.completions.create({
-      model: 'gpt-4',
+      model: this.selectModel(query),
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
       max_tokens: 200,
